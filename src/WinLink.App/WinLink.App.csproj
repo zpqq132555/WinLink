@@ -6,6 +6,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\Icons\WinLinkIcon.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\Icons\WinLinkIcon.ico" />
+    <Resource Include="Assets\Icons\WinLinkIcon.ico" />
+  </ItemGroup>
 
 </Project>
