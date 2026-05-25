@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="WinLink"
+        Icon="/WinLink.App;component/Assets/Icons/WinLinkIcon.ico"
         Width="1260"
         Height="820"
         MinWidth="1080"
