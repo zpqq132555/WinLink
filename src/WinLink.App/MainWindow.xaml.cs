@@ -125,6 +125,11 @@ public partial class MainWindow : Window
         viewModel.ApplySourceToSelectedTask(viewModel.SelectedTask.SourcePath);
     }
 
+    private void ClearReusableManagedSourceButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        viewModel.ClearSelectedTaskReusableManagedSource();
+    }
+
     private void SourcePathTextBox_OnLostFocus(object sender, RoutedEventArgs e)
     {
         if (viewModel.SelectedTask is null)

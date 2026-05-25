@@ -92,6 +92,13 @@ public sealed class ManagedLinkRecord
     /// </summary>
     public LinkSourceKind SourceKind { get; set; }
 
+    /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。
+    /// </summary>
+
+    /// <summary>
+    /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。
+    /// </summary>
+
     /// <summary>
     /// 首选链接策略。
     /// </summary>
@@ -276,6 +283,7 @@ public sealed class LinkTaskDraft : INotifyPropertyChanged
 {
     private string displayName = string.Empty;
     private LinkCreationStrategy preferredStrategy = LinkCreationStrategy.Auto;
+    private string? reusedManagedSourceRecordId;
     private LinkSourceKind sourceKind;
     private string sourcePath = string.Empty;
 
@@ -330,6 +338,26 @@ public sealed class LinkTaskDraft : INotifyPropertyChanged
         get => preferredStrategy;
         set => SetProperty(ref preferredStrategy, value);
     }
+
+    /// <summary>
+    /// 当前任务复用的已连接源记录标识；为空表示按普通新建源任务处理。
+    /// </summary>
+    public string? ReusedManagedSourceRecordId
+    {
+        get => reusedManagedSourceRecordId;
+        set
+        {
+            if (SetProperty(ref reusedManagedSourceRecordId, string.IsNullOrWhiteSpace(value) ? null : value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsReusingManagedSource)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 当前任务是否处于“复用已连接源”模式。
+    /// </summary>
+    public bool IsReusingManagedSource => !string.IsNullOrWhiteSpace(ReusedManagedSourceRecordId);
 
     /// <summary>
     /// 当前任务的目标集合。
@@ -392,6 +420,11 @@ public sealed class PlannedLinkTarget
     /// 源类型。
     /// </summary>
     public LinkSourceKind SourceKind { get; set; }
+
+    /// <summary>
+    /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。
+    /// </summary>
+    public string? ReusedManagedSourceRecordId { get; set; }
 
     /// <summary>
     /// 目标草稿引用。

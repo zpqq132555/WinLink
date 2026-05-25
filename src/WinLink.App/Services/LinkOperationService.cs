@@ -175,17 +175,21 @@ public sealed class LinkOperationService : ILinkOperationService
 
                 historyEntry.SuccessCount++;
 
-                if (!managedRecordsByTask.TryGetValue(plannedTarget.TaskId, out var record))
+                var managedRecordKey = string.IsNullOrWhiteSpace(plannedTarget.ReusedManagedSourceRecordId)
+                    ? plannedTarget.TaskId
+                    : plannedTarget.ReusedManagedSourceRecordId;
+
+                if (!managedRecordsByTask.TryGetValue(managedRecordKey, out var record))
                 {
                     record = new ManagedLinkRecord
                     {
-                        Id = plannedTarget.TaskId,
+                        Id = managedRecordKey,
                         DisplayName = plannedTarget.TaskDisplayName,
                         SourcePath = plannedTarget.SourcePath,
                         SourceKind = plannedTarget.SourceKind,
                         PreferredStrategy = plannedTarget.RecommendedStrategy,
                     };
-                    managedRecordsByTask.Add(plannedTarget.TaskId, record);
+                    managedRecordsByTask.Add(managedRecordKey, record);
                 }
 
                 record.Targets.Add(new ManagedLinkTargetRecord
@@ -340,6 +344,7 @@ public sealed class LinkOperationService : ILinkOperationService
             TaskDisplayName = task.DisplayName,
             SourcePath = task.SourcePath,
             SourceKind = task.SourceKind,
+            ReusedManagedSourceRecordId = task.ReusedManagedSourceRecordId,
             Target = target,
             RecommendedStrategy = recommendedStrategy,
             PlannedStrategy = plannedStrategy,
@@ -485,7 +490,7 @@ public sealed class LinkOperationService : ILinkOperationService
     {
         foreach (var newRecord in newRecords)
         {
-            var existingRecord = registry.Records.FirstOrDefault(record => record.Id == newRecord.Id);
+            var existingRecord = FindRecordForMerge(registry, newRecord);
             if (existingRecord is null)
             {
                 registry.Records.Add(newRecord);
@@ -518,6 +523,20 @@ public sealed class LinkOperationService : ILinkOperationService
                 existingTarget.LastCheckedAt = newTarget.LastCheckedAt;
             }
         }
+    }
+
+    private static ManagedLinkRecord? FindRecordForMerge(ManagedLinkRegistryDocument registry, ManagedLinkRecord newRecord)
+    {
+        return registry.Records.FirstOrDefault(record => string.Equals(record.Id, newRecord.Id, StringComparison.Ordinal))
+            ?? registry.Records.FirstOrDefault(record =>
+                string.Equals(record.DisplayName, newRecord.DisplayName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(NormalizeManagedPath(record.SourcePath), NormalizeManagedPath(newRecord.SourcePath), StringComparison.OrdinalIgnoreCase) &&
+                record.SourceKind == newRecord.SourceKind);
+    }
+
+    private static string NormalizeManagedPath(string path)
+    {
+        return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private static bool HasInvalidPathChars(string path)

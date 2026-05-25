@@ -13,12 +13,16 @@ namespace WinLink.App.ViewModels;
 /// </summary>
 public sealed class ShellViewModel : INotifyPropertyChanged
 {
+    private readonly record struct ManagedLinkGroupKey(string DisplayName, string SourcePath, LinkSourceKind SourceKind);
+
     private readonly ILinkOperationService linkOperationService;
     private readonly ILinkStatusService linkStatusService;
     private readonly PresetTemplateService presetTemplateService;
     private readonly IRegistryStorageService registryStorageService;
     private readonly ILinkTaskWorkbenchService workbenchService;
     private readonly SemaphoreSlim uiStateSaveLock = new(1, 1);
+    private readonly Dictionary<ManagedLinkRecord, HashSet<string>> managedLinkSourceRecordIds = new();
+    private readonly Dictionary<ManagedLinkTargetRecord, string> managedTargetSourceRecordIds = new();
     private bool suppressManagedLinkUiStatePersistence;
     private string directoryTargetDirectoryInput = string.Empty;
     private string directoryTargetNameInput = string.Empty;
@@ -127,9 +131,23 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         get => selectedTask;
         set
         {
+            if (selectedTask is not null)
+            {
+                selectedTask.PropertyChanged -= SelectedTask_OnPropertyChanged;
+            }
+
             if (!SetProperty(ref selectedTask, value))
             {
+                if (selectedTask is not null)
+                {
+                    selectedTask.PropertyChanged += SelectedTask_OnPropertyChanged;
+                }
                 return;
+            }
+
+            if (value is not null)
+            {
+                value.PropertyChanged += SelectedTask_OnPropertyChanged;
             }
 
             SelectedTaskTarget = value?.Targets.FirstOrDefault();
@@ -138,6 +156,11 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             {
                 workbenchService.RunLightValidation(value);
             }
+
+            OnPropertyChanged(nameof(SelectedTaskReusableManagedSourceRecordId));
+            OnPropertyChanged(nameof(IsSelectedTaskReusingManagedSource));
+            OnPropertyChanged(nameof(CanEditSelectedTaskSource));
+            OnPropertyChanged(nameof(SelectedTaskSourceLockHint));
         }
     }
 
@@ -149,6 +172,81 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         get => selectedTaskTarget;
         set => SetProperty(ref selectedTaskTarget, value);
     }
+
+    /// <summary>
+    /// 为当前任务切换或清除“复用已连接源”选择。
+    /// </summary>
+    public void SelectReusableManagedSourceForSelectedTask(string? recordId)
+    {
+        if (SelectedTask is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(recordId))
+        {
+            ClearSelectedTaskReusableManagedSource();
+            return;
+        }
+
+        var option = ReusableManagedSources.FirstOrDefault(candidate =>
+            string.Equals(candidate.RecordId, recordId, StringComparison.Ordinal));
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedTask.ReusedManagedSourceRecordId = option.RecordId;
+        SelectedTask.DisplayName = option.DisplayName;
+        SelectedTask.SourcePath = option.SourcePath;
+        SelectedTask.SourceKind = option.SourceKind;
+        SelectedTask.PreferredStrategy = option.PreferredStrategy;
+        ResetTargetInputHints();
+        workbenchService.RunLightValidation(SelectedTask);
+        RefreshSelectedTaskReusableManagedSourceState();
+        ShowStatus($"已复用已连接源：{option.DisplayName}");
+    }
+
+    /// <summary>
+    /// 清除当前任务的已连接源复用状态，并恢复手工编辑模式。
+    /// </summary>
+    public void ClearSelectedTaskReusableManagedSource()
+    {
+        if (SelectedTask is null || !SelectedTask.IsReusingManagedSource)
+        {
+            return;
+        }
+
+        SelectedTask.ReusedManagedSourceRecordId = null;
+        RefreshSelectedTaskReusableManagedSourceState();
+        ShowStatus("已切回手工编辑源定义模式。");
+    }
+
+    /// <summary>
+    /// 当前任务选中的可复用已连接源记录标识。
+    /// </summary>
+    public string? SelectedTaskReusableManagedSourceRecordId
+    {
+        get => SelectedTask?.ReusedManagedSourceRecordId;
+        set => SelectReusableManagedSourceForSelectedTask(value);
+    }
+
+    /// <summary>
+    /// 当前任务是否处于“复用已连接源”模式。
+    /// </summary>
+    public bool IsSelectedTaskReusingManagedSource => SelectedTask?.IsReusingManagedSource == true;
+
+    /// <summary>
+    /// 当前任务是否仍允许手工编辑源定义。
+    /// </summary>
+    public bool CanEditSelectedTaskSource => !IsSelectedTaskReusingManagedSource;
+
+    /// <summary>
+    /// 复用已连接源时展示给用户的提示文案。
+    /// </summary>
+    public string SelectedTaskSourceLockHint => IsSelectedTaskReusingManagedSource
+        ? "当前任务复用了已连接源，源路径和源类型已锁定；你可以继续新增目标。"
+        : string.Empty;
 
     /// <summary>
     /// 已记录的受管源任务列表。
@@ -233,6 +331,11 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// `已链接` 页顶部总览摘要。
     /// </summary>
     public ManagedSummarySnapshot ManagedSummary => new(GetManagedSummary());
+
+    /// <summary>
+    /// 新建连接时可直接复用的已连接源候选列表。
+    /// </summary>
+    public IReadOnlyList<ManagedLinkSourceOption> ReusableManagedSources => BuildReusableManagedSources();
 
     /// <summary>
     /// 目录优先模式下的目标目录输入。
@@ -387,8 +490,10 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return;
         }
 
+        SelectedTask.ReusedManagedSourceRecordId = null;
         workbenchService.ApplySource(SelectedTask, sourcePath);
         ResetTargetInputHints();
+        RefreshSelectedTaskReusableManagedSourceState();
         ShowStatus($"已更新源路径并锁定类型：{SelectedTask.SourceKind}");
     }
 
@@ -533,7 +638,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return "请先选择一个受管目标。";
         }
 
-        var reason = await linkOperationService.DeleteAsync(SelectedManagedLink, target);
+        var recordContext = CreateManagedRecordContext(SelectedManagedLink, target);
+        var reason = await linkOperationService.DeleteAsync(recordContext, target);
         if (reason is null)
         {
             await RefreshManagedLinksAsync();
@@ -557,9 +663,10 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return "请先选择一个受管目标。";
         }
 
-        var selectedRecordId = SelectedManagedLink.Id;
+        var recordContext = CreateManagedRecordContext(SelectedManagedLink, target);
+        var selectedRecordId = recordContext.Id;
         var selectedTargetId = target.Id;
-        var reason = await linkOperationService.RebuildAsync(SelectedManagedLink, target);
+        var reason = await linkOperationService.RebuildAsync(recordContext, target);
         LoadManagedLinksFromStorage(selectedRecordId, selectedTargetId);
         LoadExecutionHistoryFromStorage();
         ShowStatus(reason is null ? $"已重建目标：{target.DisplayName}" : $"重建链接失败：{target.DisplayName}");
@@ -576,7 +683,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return;
         }
 
-        await linkOperationService.RemoveRecordAsync(SelectedManagedLink, target);
+        var recordContext = CreateManagedRecordContext(SelectedManagedLink, target);
+        await linkOperationService.RemoveRecordAsync(recordContext, target);
         LoadManagedLinksFromStorage();
         ShowStatus($"已移除记录：{target.DisplayName}");
     }
@@ -648,6 +756,50 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         DirectoryTargetNameInput = GetSuggestedTargetName();
         FullTargetPathInput = string.Empty;
         DirectoryTargetDirectoryInput = string.Empty;
+    }
+
+    private void SelectedTask_OnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, SelectedTask))
+        {
+            return;
+        }
+
+        if (string.Equals(e.PropertyName, nameof(LinkTaskDraft.DisplayName), StringComparison.Ordinal))
+        {
+            var option = GetSelectedTaskReusableManagedSourceOption();
+            if (option is not null && !string.Equals(SelectedTask?.DisplayName, option.DisplayName, StringComparison.Ordinal))
+            {
+                SelectedTask!.ReusedManagedSourceRecordId = null;
+                RefreshSelectedTaskReusableManagedSourceState();
+            }
+
+            return;
+        }
+
+        if (string.Equals(e.PropertyName, nameof(LinkTaskDraft.ReusedManagedSourceRecordId), StringComparison.Ordinal))
+        {
+            RefreshSelectedTaskReusableManagedSourceState();
+        }
+    }
+
+    private ManagedLinkSourceOption? GetSelectedTaskReusableManagedSourceOption()
+    {
+        if (SelectedTask is null || string.IsNullOrWhiteSpace(SelectedTask.ReusedManagedSourceRecordId))
+        {
+            return null;
+        }
+
+        return ReusableManagedSources.FirstOrDefault(option =>
+            string.Equals(option.RecordId, SelectedTask.ReusedManagedSourceRecordId, StringComparison.Ordinal));
+    }
+
+    private void RefreshSelectedTaskReusableManagedSourceState()
+    {
+        OnPropertyChanged(nameof(SelectedTaskReusableManagedSourceRecordId));
+        OnPropertyChanged(nameof(IsSelectedTaskReusingManagedSource));
+        OnPropertyChanged(nameof(CanEditSelectedTaskSource));
+        OnPropertyChanged(nameof(SelectedTaskSourceLockHint));
     }
 
     private void LoadUiStateFromStorage()
@@ -739,17 +891,18 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     private void ApplyManagedLinks(ManagedLinkRegistryDocument registry, string? preferredRecordId = null, string? preferredTargetId = null)
     {
         ManagedLinks.Clear();
+        managedLinkSourceRecordIds.Clear();
+        managedTargetSourceRecordIds.Clear();
 
         var expandedIds = new HashSet<string>(workspaceUiState.ExpandedManagedLinkIds, StringComparer.Ordinal);
-        foreach (var record in registry.Records)
+        foreach (var record in BuildGroupedManagedLinks(registry.Records, expandedIds))
         {
-            record.IsExpanded = expandedIds.Contains(record.Id);
             ManagedLinks.Add(record);
         }
 
         suppressManagedLinkUiStatePersistence = true;
         var selectedRecordId = preferredRecordId ?? workspaceUiState.SelectedManagedLinkId;
-        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, selectedRecordId, StringComparison.Ordinal))
+        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => ContainsManagedRecordId(record, selectedRecordId))
             ?? ManagedLinks.FirstOrDefault();
         if (SelectedManagedLink is not null)
         {
@@ -759,6 +912,135 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         suppressManagedLinkUiStatePersistence = false;
 
         OnPropertyChanged(nameof(ManagedSummary));
+        OnPropertyChanged(nameof(ReusableManagedSources));
+    }
+
+    private ManagedLinkRecord CreateManagedRecordContext(ManagedLinkRecord groupedRecord, ManagedLinkTargetRecord target)
+    {
+        if (!managedTargetSourceRecordIds.TryGetValue(target, out var recordId))
+        {
+            recordId = groupedRecord.Id;
+        }
+
+        return new ManagedLinkRecord
+        {
+            Id = recordId,
+            DisplayName = groupedRecord.DisplayName,
+            SourcePath = groupedRecord.SourcePath,
+            SourceKind = groupedRecord.SourceKind,
+            PreferredStrategy = groupedRecord.PreferredStrategy,
+        };
+    }
+
+    private IReadOnlyList<ManagedLinkSourceOption> BuildReusableManagedSources()
+    {
+        if (ManagedLinks.Count == 0)
+        {
+            return [];
+        }
+
+        var namesRequiringPathDisambiguation = ManagedLinks
+            .GroupBy(record => record.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group
+                .Select(record => NormalizeManagedLinkPath(record.SourcePath))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Skip(1)
+                .Any())
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return ManagedLinks
+            .Select(record => new ManagedLinkSourceOption
+            {
+                RecordId = record.Id,
+                DisplayName = record.DisplayName,
+                SourcePath = record.SourcePath,
+                SourceKind = record.SourceKind,
+                PreferredStrategy = record.PreferredStrategy,
+                DisplayLabel = namesRequiringPathDisambiguation.Contains(record.DisplayName)
+                    ? $"{record.DisplayName} ({record.SourcePath})"
+                    : record.DisplayName,
+            })
+            .ToList();
+    }
+
+    private IEnumerable<ManagedLinkRecord> BuildGroupedManagedLinks(IEnumerable<ManagedLinkRecord> records, HashSet<string> expandedIds)
+    {
+        return records
+            .GroupBy(CreateManagedLinkGroupKey)
+            .Select(group =>
+            {
+                var representative = group.First();
+                var sourceRecordIds = group
+                    .Select(record => record.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                var aggregatedRecord = new ManagedLinkRecord
+                {
+                    Id = representative.Id,
+                    DisplayName = representative.DisplayName,
+                    SourcePath = representative.SourcePath,
+                    SourceKind = representative.SourceKind,
+                    PreferredStrategy = representative.PreferredStrategy,
+                    CreatedAt = group.Min(record => record.CreatedAt),
+                    UpdatedAt = group.Max(record => record.UpdatedAt),
+                    IsExpanded = group.Any(record => expandedIds.Contains(record.Id)),
+                };
+
+                foreach (var sourceRecord in group)
+                {
+                    foreach (var sourceTarget in sourceRecord.Targets)
+                    {
+                        var clonedTarget = CloneManagedTarget(sourceTarget);
+                        managedTargetSourceRecordIds[clonedTarget] = sourceRecord.Id;
+                        aggregatedRecord.Targets.Add(clonedTarget);
+                    }
+                }
+
+                managedLinkSourceRecordIds[aggregatedRecord] = sourceRecordIds;
+                return aggregatedRecord;
+            })
+            .OrderBy(record => record.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(record => record.SourcePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool ContainsManagedRecordId(ManagedLinkRecord record, string? recordId)
+    {
+        if (string.IsNullOrWhiteSpace(recordId))
+        {
+            return false;
+        }
+
+        return managedLinkSourceRecordIds.TryGetValue(record, out var sourceRecordIds)
+            ? sourceRecordIds.Contains(recordId)
+            : string.Equals(record.Id, recordId, StringComparison.Ordinal);
+    }
+
+    private static ManagedLinkGroupKey CreateManagedLinkGroupKey(ManagedLinkRecord record)
+    {
+        return new ManagedLinkGroupKey(
+            record.DisplayName.Trim(),
+            NormalizeManagedLinkPath(record.SourcePath),
+            record.SourceKind);
+    }
+
+    private static ManagedLinkTargetRecord CloneManagedTarget(ManagedLinkTargetRecord source)
+    {
+        return new ManagedLinkTargetRecord
+        {
+            Id = source.Id,
+            DisplayName = source.DisplayName,
+            TargetPath = source.TargetPath,
+            State = source.State,
+            StatusReason = source.StatusReason,
+            AppliedStrategy = source.AppliedStrategy,
+            LastCheckedAt = source.LastCheckedAt,
+        };
+    }
+
+    private static string NormalizeManagedLinkPath(string sourcePath)
+    {
+        return sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private bool SetProperty<TValue>(ref TValue storage, TValue value, [CallerMemberName] string? propertyName = null)
