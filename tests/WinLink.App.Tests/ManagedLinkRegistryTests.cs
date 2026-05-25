@@ -255,6 +255,197 @@ public sealed class ManagedLinkRegistryTests
     }
 
     [Fact]
+    public async Task ShellViewModel_should_group_managed_links_by_display_name_source_path_and_kind()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var sharedSourcePath = Path.Combine(tempRoot, "shared-source.txt");
+            var alternativeSourcePath = Path.Combine(tempRoot, "other-source.txt");
+            var recordA = CreateRecord(sharedSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            recordA.Id = "record-a";
+            recordA.DisplayName = "AGENTS 分发";
+            recordA.Targets[0].Id = "target-a";
+
+            var recordB = CreateRecord(sharedSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "b.txt"), LinkCreationStrategy.HardLink);
+            recordB.Id = "record-b";
+            recordB.DisplayName = "AGENTS 分发";
+            recordB.Targets[0].Id = "target-b";
+
+            var recordC = CreateRecord(alternativeSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "c.txt"), LinkCreationStrategy.HardLink);
+            recordC.Id = "record-c";
+            recordC.DisplayName = "AGENTS 分发";
+            recordC.Targets[0].Id = "target-c";
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [recordA, recordB, recordC],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            Assert.Equal(2, viewModel.ManagedLinks.Count);
+
+            var groupedRecord = viewModel.ManagedLinks.Single(record => string.Equals(record.SourcePath, sharedSourcePath, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(2, groupedRecord.Targets.Count);
+            Assert.Contains(groupedRecord.Targets, target => target.Id == "target-a");
+            Assert.Contains(groupedRecord.Targets, target => target.Id == "target-b");
+            Assert.Equal(2, viewModel.ManagedSummary.Records);
+            Assert.Equal(3, viewModel.ManagedSummary.Targets);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ShellViewModel_should_expose_reusable_managed_source_options_with_path_disambiguation()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var sharedSourcePath = Path.Combine(tempRoot, "shared-source.txt");
+            var alternativeSourcePath = Path.Combine(tempRoot, "other-source.txt");
+            var recordA = CreateRecord(sharedSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            recordA.Id = "record-a";
+            recordA.DisplayName = "AGENTS 分发";
+
+            var recordB = CreateRecord(sharedSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "b.txt"), LinkCreationStrategy.HardLink);
+            recordB.Id = "record-b";
+            recordB.DisplayName = "AGENTS 分发";
+
+            var recordC = CreateRecord(alternativeSourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "c.txt"), LinkCreationStrategy.HardLink);
+            recordC.Id = "record-c";
+            recordC.DisplayName = "AGENTS 分发";
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [recordA, recordB, recordC],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            Assert.Equal(2, viewModel.ReusableManagedSources.Count);
+            Assert.All(viewModel.ReusableManagedSources, option => Assert.Contains(option.SourcePath, option.DisplayLabel, StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(viewModel.ReusableManagedSources, option => option.SourcePath == sharedSourcePath);
+            Assert.Contains(viewModel.ReusableManagedSources, option => option.SourcePath == alternativeSourcePath);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ShellViewModel_should_lock_source_fields_when_reusing_managed_source()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var sourcePath = Path.Combine(tempRoot, "shared-source.txt");
+            var record = CreateRecord(sourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            record.Id = "record-a";
+            record.DisplayName = "AGENTS 分发";
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [record],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            viewModel.SelectReusableManagedSourceForSelectedTask("record-a");
+
+            Assert.Equal("record-a", viewModel.SelectedTaskReusableManagedSourceRecordId);
+            Assert.NotNull(viewModel.SelectedTask);
+            Assert.Equal("AGENTS 分发", viewModel.SelectedTask.DisplayName);
+            Assert.Equal(sourcePath, viewModel.SelectedTask.SourcePath);
+            Assert.Equal(LinkSourceKind.File, viewModel.SelectedTask.SourceKind);
+            Assert.False(viewModel.CanEditSelectedTaskSource);
+            Assert.True(viewModel.IsSelectedTaskReusingManagedSource);
+            Assert.Contains("已锁定", viewModel.SelectedTaskSourceLockHint, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ShellViewModel_should_restore_manual_source_editing_after_clearing_reused_managed_source()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var sourcePath = Path.Combine(tempRoot, "shared-source.txt");
+            var record = CreateRecord(sourcePath, LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            record.Id = "record-a";
+            record.DisplayName = "AGENTS 分发";
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [record],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            viewModel.SelectReusableManagedSourceForSelectedTask("record-a");
+            viewModel.ClearSelectedTaskReusableManagedSource();
+            viewModel.SelectedTask!.DisplayName = "自定义备注";
+
+            Assert.Null(viewModel.SelectedTaskReusableManagedSourceRecordId);
+            Assert.False(viewModel.IsSelectedTaskReusingManagedSource);
+            Assert.True(viewModel.CanEditSelectedTaskSource);
+            Assert.Equal(string.Empty, viewModel.SelectedTaskSourceLockHint);
+            Assert.Equal("自定义备注", viewModel.SelectedTask.DisplayName);
+            Assert.Equal(sourcePath, viewModel.SelectedTask.SourcePath);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ApplySelectedPresetAsync_should_reuse_standard_validation_and_execution_pipeline()
     {
         var tempRoot = CreateTemporaryDirectory();
@@ -397,6 +588,80 @@ public sealed class ManagedLinkRegistryTests
                 Directory.Delete(targetPath);
             }
 
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_should_append_target_to_existing_reused_managed_source_record()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "source", "AGENTS.md");
+            var existingTargetPath = Path.Combine(tempRoot, "workspace", "existing-AGENTS.md");
+            var newTargetPath = Path.Combine(tempRoot, "workspace", "new-AGENTS.md");
+            Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+            File.WriteAllText(sourcePath, "content");
+
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records =
+                [
+                    new ManagedLinkRecord
+                    {
+                        Id = "record-a",
+                        DisplayName = "AGENTS 分发",
+                        SourcePath = sourcePath,
+                        SourceKind = LinkSourceKind.File,
+                        PreferredStrategy = LinkCreationStrategy.SymbolicLink,
+                        Targets =
+                        [
+                            new ManagedLinkTargetRecord
+                            {
+                                Id = "target-a",
+                                DisplayName = "existing",
+                                TargetPath = existingTargetPath,
+                                AppliedStrategy = LinkCreationStrategy.SymbolicLink,
+                                State = LinkTargetState.Disconnected,
+                            },
+                        ],
+                    },
+                ],
+            });
+
+            var service = CreateExecutionService(tempRoot, new FakePresetApplyBackendService());
+            var task = new LinkTaskDraft
+            {
+                Id = "task-new",
+                DisplayName = "AGENTS 分发",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.File,
+                PreferredStrategy = LinkCreationStrategy.SymbolicLink,
+                ReusedManagedSourceRecordId = "record-a",
+            };
+            var newTarget = new LinkTargetDraft
+            {
+                DisplayName = "new",
+            };
+            newTarget.ApplyFullPath(newTargetPath);
+            task.Targets.Add(newTarget);
+
+            var plan = await service.PlanExecutionAsync([task]);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var registry = await storage.LoadRegistryAsync();
+
+            var record = Assert.Single(registry.Records);
+            Assert.Equal("record-a", record.Id);
+            Assert.Equal(2, record.Targets.Count);
+            Assert.Contains(record.Targets, target => target.TargetPath == existingTargetPath);
+            Assert.Contains(record.Targets, target => target.TargetPath == newTargetPath);
+            Assert.True(File.Exists(newTargetPath));
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+        }
+        finally
+        {
             Directory.Delete(tempRoot, recursive: true);
         }
     }

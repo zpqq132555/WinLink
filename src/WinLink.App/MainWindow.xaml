@@ -81,6 +81,7 @@
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                         <RowDefinition Height="*" />
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
@@ -88,10 +89,23 @@
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
 
-                                    <TextBlock Margin="0,0,0,12" VerticalAlignment="Center" Text="备注名" />
-                                    <TextBox Grid.Column="1"
-                                             Margin="0,0,0,12"
-                                             Text="{Binding SelectedTask.DisplayName, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Margin="0,0,0,12" VerticalAlignment="Top" Text="备注名" />
+                                    <StackPanel Grid.Column="1" Margin="0,0,0,12">
+                                        <TextBox Margin="0,0,0,8"
+                                                 Text="{Binding SelectedTask.DisplayName, UpdateSourceTrigger=PropertyChanged}" />
+                                        <DockPanel LastChildFill="True">
+                                            <ComboBox Margin="0,0,8,0"
+                                                      DisplayMemberPath="DisplayLabel"
+                                                      ItemsSource="{Binding ReusableManagedSources}"
+                                                      SelectedValue="{Binding SelectedTaskReusableManagedSourceRecordId, UpdateSourceTrigger=PropertyChanged}"
+                                                      SelectedValuePath="RecordId" />
+                                            <Button Width="88"
+                                                    Padding="12,6"
+                                                    Click="ClearReusableManagedSourceButton_OnClick"
+                                                    Content="清除选择"
+                                                    IsEnabled="{Binding IsSelectedTaskReusingManagedSource}" />
+                                        </DockPanel>
+                                    </StackPanel>
 
                                     <TextBlock Grid.Row="1" Margin="0,0,0,12" VerticalAlignment="Center" Text="源路径" />
                                     <Grid Grid.Row="1" Grid.Column="1" Margin="0,0,0,12">
@@ -103,22 +117,26 @@
                                         </Grid.ColumnDefinitions>
 
                                         <TextBox Margin="0,0,8,0"
+                                                 IsReadOnly="{Binding IsSelectedTaskReusingManagedSource}"
                                                  LostFocus="SourcePathTextBox_OnLostFocus"
                                                  Text="{Binding SelectedTask.SourcePath, UpdateSourceTrigger=PropertyChanged}" />
                                         <Button Grid.Column="1"
                                                 Margin="0,0,8,0"
                                                 Padding="14,6"
                                                 Click="BrowseFileSourceButton_OnClick"
-                                                Content="浏览文件..." />
+                                                Content="浏览文件..."
+                                                IsEnabled="{Binding CanEditSelectedTaskSource}" />
                                         <Button Grid.Column="2"
                                                 Margin="0,0,8,0"
                                                 Padding="14,6"
                                                 Click="BrowseDirectorySourceButton_OnClick"
-                                                Content="浏览目录..." />
+                                                Content="浏览目录..."
+                                                IsEnabled="{Binding CanEditSelectedTaskSource}" />
                                         <Button Grid.Column="3"
                                                 Padding="14,6"
                                                 Click="DetectSourceTypeButton_OnClick"
-                                                Content="识别类型" />
+                                                Content="识别类型"
+                                                IsEnabled="{Binding CanEditSelectedTaskSource}" />
                                     </Grid>
 
                                     <TextBlock Grid.Row="2" Margin="0,0,0,12" VerticalAlignment="Center" Text="源类型" />
@@ -129,14 +147,21 @@
                                                FontWeight="SemiBold"
                                                Text="{Binding SelectedTask.SourceKind}" />
 
-                                    <TextBlock Grid.Row="3" Margin="0,0,0,12" VerticalAlignment="Center" Text="高级策略" />
-                                    <ComboBox Grid.Row="3"
+                                    <TextBlock Grid.Row="3"
+                                               Grid.Column="1"
+                                               Margin="0,0,0,12"
+                                               Foreground="#5F6B7A"
+                                               Text="{Binding SelectedTaskSourceLockHint}"
+                                               TextWrapping="Wrap" />
+
+                                    <TextBlock Grid.Row="4" Margin="0,0,0,12" VerticalAlignment="Center" Text="高级策略" />
+                                    <ComboBox Grid.Row="4"
                                               Grid.Column="1"
                                               Margin="0,0,0,12"
                                               ItemsSource="{Binding LinkStrategyOptions}"
                                               SelectedItem="{Binding SelectedTask.PreferredStrategy}" />
 
-                                    <GroupBox Grid.Row="4" Grid.ColumnSpan="2" Margin="0,0,0,12" Header="快速添加目标">
+                                    <GroupBox Grid.Row="5" Grid.ColumnSpan="2" Margin="0,0,0,12" Header="快速添加目标">
                                         <Grid Margin="12">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
@@ -177,7 +202,7 @@
                                         </Grid>
                                     </GroupBox>
 
-                                    <Grid Grid.Row="5" Grid.ColumnSpan="2" Margin="0,0,0,12">
+                                    <Grid Grid.Row="6" Grid.ColumnSpan="2" Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="110" />
                                             <ColumnDefinition Width="*" />
@@ -194,7 +219,7 @@
                                                 Content="按完整路径添加" />
                                     </Grid>
 
-                                    <GroupBox Grid.Row="6" Grid.ColumnSpan="2" Header="目标表格">
+                                    <GroupBox Grid.Row="7" Grid.ColumnSpan="2" Header="目标表格">
                                         <DockPanel Margin="0,8,0,0">
                                             <StackPanel DockPanel.Dock="Top"
                                                         Margin="0,0,0,8"
