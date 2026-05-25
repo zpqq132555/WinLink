@@ -53,6 +53,7 @@ public sealed class PresetTemplateService
         var sourcePath = ExpandTemplatePath(preset.SourcePathTemplate);
         var task = new LinkTaskDraft
         {
+            Id = preset.Id,
             DisplayName = preset.Name,
             SourcePath = sourcePath,
             SourceKind = pathEnvironmentService.DetectSourceKind(sourcePath),

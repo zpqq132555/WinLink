@@ -155,6 +155,110 @@ public sealed class LinkExecutionServiceTests
         }
     }
 
+    [Fact]
+    public async Task ExecuteAsync_should_fallback_to_hard_link_when_symbolic_link_lacks_privilege()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "AGENTS.md");
+            File.WriteAllText(sourcePath, "test");
+            var targetPath = Path.Combine(tempRoot, "links", "AGENTS.md");
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "AGENTS 主配置分发",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.File,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var backend = new FakeLinkBackendService
+            {
+                SupportedStrategies =
+                {
+                    [LinkSourceKind.File] = [LinkCreationStrategy.SymbolicLink, LinkCreationStrategy.HardLink],
+                },
+                StrategyFailures =
+                {
+                    [(targetPath, LinkCreationStrategy.SymbolicLink)] = new UnauthorizedAccessException("客户端没有所需的特权。"),
+                },
+            };
+            var service = CreateExecutionService(tempRoot, backend);
+
+            var plan = await service.PlanExecutionAsync([task]);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+            var registry = await storage.LoadRegistryAsync();
+
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+            Assert.Equal(0, result.HistoryEntry.FailedCount);
+            Assert.Empty(result.HistoryEntry.FailureReasons);
+            Assert.Equal(
+                [LinkCreationStrategy.SymbolicLink, LinkCreationStrategy.HardLink],
+                backend.AttemptedStrategies[targetPath]);
+            Assert.Equal(LinkCreationStrategy.HardLink, registry.Records[0].Targets[0].AppliedStrategy);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_should_fallback_to_junction_when_directory_symbolic_link_lacks_privilege()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            Directory.CreateDirectory(sourcePath);
+            var targetPath = Path.Combine(tempRoot, "links", "skills");
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 目录同步",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var backend = new FakeLinkBackendService
+            {
+                SupportedStrategies =
+                {
+                    [LinkSourceKind.Directory] = [LinkCreationStrategy.SymbolicLink, LinkCreationStrategy.Junction],
+                },
+                StrategyFailures =
+                {
+                    [(targetPath, LinkCreationStrategy.SymbolicLink)] = new UnauthorizedAccessException("客户端没有所需的特权。"),
+                },
+            };
+            var service = CreateExecutionService(tempRoot, backend);
+
+            var plan = await service.PlanExecutionAsync([task]);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+            var registry = await storage.LoadRegistryAsync();
+
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+            Assert.Equal(0, result.HistoryEntry.FailedCount);
+            Assert.Empty(result.HistoryEntry.FailureReasons);
+            Assert.Equal(
+                [LinkCreationStrategy.SymbolicLink, LinkCreationStrategy.Junction],
+                backend.AttemptedStrategies[targetPath]);
+            Assert.Equal(LinkCreationStrategy.Junction, registry.Records[0].Targets[0].AppliedStrategy);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static LinkOperationService CreateExecutionService(string storageRoot, FakeLinkBackendService backend)
     {
         var pathService = new PathEnvironmentService();
@@ -176,6 +280,10 @@ public sealed class LinkExecutionServiceTests
 
         public Dictionary<string, string> Failures { get; } = [];
 
+        public Dictionary<(string TargetPath, LinkCreationStrategy Strategy), Exception> StrategyFailures { get; } = [];
+
+        public Dictionary<string, List<LinkCreationStrategy>> AttemptedStrategies { get; } = [];
+
         public bool Supports(LinkSourceKind sourceKind, LinkCreationStrategy strategy)
         {
             return SupportedStrategies.TryGetValue(sourceKind, out var strategies) && strategies.Contains(strategy);
@@ -189,9 +297,22 @@ public sealed class LinkExecutionServiceTests
                 Directory.CreateDirectory(parentDirectory);
             }
 
+            if (!AttemptedStrategies.TryGetValue(targetPath, out var attempted))
+            {
+                attempted = [];
+                AttemptedStrategies[targetPath] = attempted;
+            }
+
+            attempted.Add(strategy);
+
             if (Failures.TryGetValue(targetPath, out var reason))
             {
                 throw new InvalidOperationException(reason);
+            }
+
+            if (StrategyFailures.TryGetValue((targetPath, strategy), out var exception))
+            {
+                throw exception;
             }
 
             if (sourceKind == LinkSourceKind.Directory)

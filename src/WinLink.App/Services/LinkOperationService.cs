@@ -171,11 +171,7 @@ public sealed class LinkOperationService : ILinkOperationService
 
             try
             {
-                await backendService.CreateAsync(
-                    plannedTarget.SourceKind,
-                    plannedTarget.SourcePath,
-                    plannedTarget.Target.TargetPath,
-                    plannedTarget.PlannedStrategy);
+                var appliedStrategy = await CreateWithFallbackAsync(plannedTarget);
 
                 historyEntry.SuccessCount++;
 
@@ -197,7 +193,7 @@ public sealed class LinkOperationService : ILinkOperationService
                     Id = plannedTarget.Target.Id,
                     DisplayName = plannedTarget.Target.DisplayName,
                     TargetPath = plannedTarget.Target.TargetPath,
-                    AppliedStrategy = plannedTarget.PlannedStrategy,
+                    AppliedStrategy = appliedStrategy,
                     State = LinkTargetState.Active,
                     StatusReason = "最近一次执行创建成功。",
                     LastCheckedAt = DateTimeOffset.Now,
@@ -438,6 +434,51 @@ public sealed class LinkOperationService : ILinkOperationService
             LinkSourceKind.Directory => LinkCreationStrategy.Junction,
             _ => LinkCreationStrategy.Auto,
         };
+    }
+
+    private async Task<LinkCreationStrategy> CreateWithFallbackAsync(PlannedLinkTarget plannedTarget)
+    {
+        try
+        {
+            await backendService.CreateAsync(
+                plannedTarget.SourceKind,
+                plannedTarget.SourcePath,
+                plannedTarget.Target.TargetPath,
+                plannedTarget.PlannedStrategy);
+            return plannedTarget.PlannedStrategy;
+        }
+        catch (Exception ex) when (ShouldRetryWithFallback(ex, plannedTarget))
+        {
+            var fallbackStrategy = GetFallbackStrategy(plannedTarget.SourceKind);
+            await backendService.CreateAsync(
+                plannedTarget.SourceKind,
+                plannedTarget.SourcePath,
+                plannedTarget.Target.TargetPath,
+                fallbackStrategy);
+            return fallbackStrategy;
+        }
+    }
+
+    private bool ShouldRetryWithFallback(Exception ex, PlannedLinkTarget plannedTarget)
+    {
+        if (plannedTarget.PlannedStrategy != LinkCreationStrategy.SymbolicLink)
+        {
+            return false;
+        }
+
+        var fallbackStrategy = GetFallbackStrategy(plannedTarget.SourceKind);
+        if (fallbackStrategy == LinkCreationStrategy.Auto || !backendService.Supports(plannedTarget.SourceKind, fallbackStrategy))
+        {
+            return false;
+        }
+
+        return ex is UnauthorizedAccessException || ContainsPrivilegeHint(ex.Message);
+    }
+
+    private static bool ContainsPrivilegeHint(string message)
+    {
+        return message.Contains("特权", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("privilege", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void MergeManagedRecords(ManagedLinkRegistryDocument registry, IEnumerable<ManagedLinkRecord> newRecords)

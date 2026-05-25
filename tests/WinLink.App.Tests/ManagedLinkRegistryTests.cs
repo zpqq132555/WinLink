@@ -60,6 +60,38 @@ public sealed class ManagedLinkRegistryTests
     }
 
     [Fact]
+    public async Task RefreshAsync_should_mark_matching_junction_as_active()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        var targetPath = Path.Combine(tempRoot, "links", "skills");
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            Directory.CreateDirectory(sourcePath);
+
+            var backend = new WindowsLinkBackendService();
+            await backend.CreateAsync(LinkSourceKind.Directory, sourcePath, targetPath, LinkCreationStrategy.Junction);
+
+            var record = CreateRecord(sourcePath, LinkSourceKind.Directory, targetPath, LinkCreationStrategy.Junction);
+            var service = new LinkStatusService();
+
+            var refreshed = await service.RefreshAsync(record);
+
+            Assert.Equal(LinkTargetState.Active, refreshed.Targets[0].State);
+            Assert.Contains("Junction", refreshed.Targets[0].StatusReason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(targetPath))
+            {
+                Directory.Delete(targetPath);
+            }
+
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DeleteAsync_should_delete_only_the_matching_link_target()
     {
         var tempRoot = CreateTemporaryDirectory();
@@ -280,6 +312,296 @@ public sealed class ManagedLinkRegistryTests
         }
     }
 
+    [Fact]
+    public async Task ApplySelectedPresetAsync_should_reuse_existing_record_when_reconnecting_disconnected_target()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var pathService = new PathEnvironmentService();
+            var workbenchService = new LinkTaskWorkbenchService(pathService);
+            var backend = new FakePresetApplyBackendService();
+            var sourcePath = Path.Combine(tempRoot, "source", "skills");
+            var targetPath = Path.Combine(tempRoot, "workspace", "skills");
+            Directory.CreateDirectory(sourcePath);
+
+            var preset = new PresetTemplateDefinition
+            {
+                Id = "preset-skills-sync",
+                Name = "skills direct apply",
+                SourcePathTemplate = sourcePath,
+                Targets =
+                [
+                    new PresetTemplateTarget
+                    {
+                        DisplayName = "workspace skills",
+                        TargetPathTemplate = targetPath,
+                    },
+                ],
+            };
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records =
+                [
+                    new ManagedLinkRecord
+                    {
+                        Id = preset.Id,
+                        DisplayName = preset.Name,
+                        SourcePath = sourcePath,
+                        SourceKind = LinkSourceKind.Directory,
+                        PreferredStrategy = LinkCreationStrategy.Junction,
+                        Targets =
+                        [
+                            new ManagedLinkTargetRecord
+                            {
+                                Id = "target-1",
+                                DisplayName = "workspace skills",
+                                TargetPath = targetPath,
+                                AppliedStrategy = LinkCreationStrategy.Junction,
+                                State = LinkTargetState.Disconnected,
+                                StatusReason = "disconnected",
+                            },
+                        ],
+                    },
+                ],
+            });
+
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                workbenchService,
+                new LinkOperationService(pathService, workbenchService, storage, backend),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+            viewModel.Presets.Add(preset);
+            viewModel.SelectedPreset = preset;
+
+            var plan = await viewModel.BuildSelectedPresetExecutionPlanAsync();
+            await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade: true);
+            var registry = await storage.LoadRegistryAsync();
+
+            var record = Assert.Single(registry.Records);
+            Assert.Equal(preset.Id, record.Id);
+            Assert.Single(record.Targets);
+            Assert.Equal(targetPath, record.Targets[0].TargetPath);
+        }
+        finally
+        {
+            var targetPath = Path.Combine(tempRoot, "workspace", "skills");
+            if (Directory.Exists(targetPath))
+            {
+                Directory.Delete(targetPath);
+            }
+
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RefreshManagedLinksAsync_should_complete_on_single_threaded_context()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            var completed = RunOnSingleThreadedContext(
+                () => _ = viewModel.RefreshManagedLinksAsync(autoTriggered: true),
+                TimeSpan.FromSeconds(2),
+                out var failure);
+
+            Assert.True(completed, failure?.ToString() ?? "Calling RefreshManagedLinksAsync blocked on a single-threaded context.");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ShellViewModel_should_start_with_a_single_empty_pending_task()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            var task = Assert.Single(viewModel.PendingTasks);
+            Assert.Equal("新任务", task.DisplayName);
+            Assert.Equal(string.Empty, task.SourcePath);
+            Assert.Equal(LinkSourceKind.Unknown, task.SourceKind);
+            Assert.Empty(task.Targets);
+            Assert.Same(task, viewModel.SelectedTask);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ShellViewModel_should_expose_updated_agents_and_skills_presets()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+        try
+        {
+            Environment.SetEnvironmentVariable("USERPROFILE", tempRoot);
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            Assert.Collection(
+                viewModel.Presets,
+                agentsPreset =>
+                {
+                    Assert.Equal("AGENTS 主配置分发", agentsPreset.Name);
+                    Assert.Equal("%USERPROFILE%\\.agents\\skills\\AGENTS_BAK.md", agentsPreset.SourcePathTemplate);
+                    Assert.Collection(
+                        agentsPreset.Targets,
+                        codexTarget =>
+                        {
+                            Assert.Equal("Codex AGENTS", codexTarget.DisplayName);
+                            Assert.Equal("%USERPROFILE%\\.codex\\AGENTS.md", codexTarget.TargetPathTemplate);
+                        },
+                        claudeTarget =>
+                        {
+                            Assert.Equal("Claude CLAUDE", claudeTarget.DisplayName);
+                            Assert.Equal("%USERPROFILE%\\.claude\\CLAUDE.md", claudeTarget.TargetPathTemplate);
+                        });
+                },
+                skillsPreset =>
+                {
+                    Assert.Equal("skills 目录同步", skillsPreset.Name);
+                    Assert.Equal("%USERPROFILE%\\.agents\\skills", skillsPreset.SourcePathTemplate);
+                    var target = Assert.Single(skillsPreset.Targets);
+                    Assert.Equal("Claude skills", target.DisplayName);
+                    Assert.Equal("%USERPROFILE%\\.claude\\skills", target.TargetPathTemplate);
+                });
+
+            Assert.Equal(Path.Combine(tempRoot, ".agents", "skills", "AGENTS_BAK.md"), viewModel.SelectedPresetPreview?.ExpandedSourcePath);
+            Assert.Collection(
+                viewModel.SelectedPresetPreview?.Targets ?? [],
+                codexTarget => Assert.Equal(Path.Combine(tempRoot, ".codex", "AGENTS.md"), codexTarget.ExpandedTargetPath),
+                claudeTarget => Assert.Equal(Path.Combine(tempRoot, ".claude", "CLAUDE.md"), claudeTarget.ExpandedTargetPath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Selecting_managed_link_should_not_block_when_ui_state_save_is_slow()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var storage = new BlockingUiStateStorage();
+            storage.Registry.Records.Add(CreateRecord(
+                Path.Combine(tempRoot, "source-a.txt"),
+                LinkSourceKind.File,
+                Path.Combine(tempRoot, "links", "a.txt"),
+                LinkCreationStrategy.HardLink));
+            storage.Registry.Records.Add(CreateRecord(
+                Path.Combine(tempRoot, "source-b.txt"),
+                LinkSourceKind.File,
+                Path.Combine(tempRoot, "links", "b.txt"),
+                LinkCreationStrategy.HardLink));
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                new AppDirectories(tempRoot),
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            var completed = RunOnSingleThreadedContext(
+                () => viewModel.SelectedManagedLink = viewModel.ManagedLinks.Last(),
+                TimeSpan.FromSeconds(2),
+                out var failure);
+
+            Assert.True(completed, failure?.ToString() ?? "Selecting a managed link blocked on UI state persistence.");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Expanding_managed_link_should_not_block_when_ui_state_save_is_slow()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var storage = new BlockingUiStateStorage();
+            var record = CreateRecord(
+                Path.Combine(tempRoot, "source-a.txt"),
+                LinkSourceKind.File,
+                Path.Combine(tempRoot, "links", "a.txt"),
+                LinkCreationStrategy.HardLink);
+            storage.Registry.Records.Add(record);
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                new AppDirectories(tempRoot),
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            var completed = RunOnSingleThreadedContext(
+                () => viewModel.SetManagedLinkExpanded(viewModel.SelectedManagedLink, true),
+                TimeSpan.FromSeconds(2),
+                out var failure);
+
+            Assert.True(completed, failure?.ToString() ?? "Expanding managed link details blocked on UI state persistence.");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static ManagedLinkRecord CreateRecord(
         string sourcePath,
         LinkSourceKind sourceKind,
@@ -317,6 +639,43 @@ public sealed class ManagedLinkRegistryTests
         var path = Path.Combine(Path.GetTempPath(), "WinLink.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static bool RunOnSingleThreadedContext(Action action, TimeSpan timeout, out Exception? failure)
+    {
+        Exception? capturedFailure = null;
+        using var completed = new ManualResetEventSlim(false);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new NonPumpingSynchronizationContext());
+                action();
+            }
+            catch (Exception ex)
+            {
+                capturedFailure = ex;
+            }
+            finally
+            {
+                completed.Set();
+            }
+        })
+        {
+            IsBackground = true,
+        };
+
+        thread.Start();
+        var didComplete = completed.Wait(timeout);
+        failure = capturedFailure;
+        return didComplete;
+    }
+
+    private sealed class NonPumpingSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+        }
     }
 
     private sealed class NoopLinkOperationService : ILinkOperationService
@@ -357,6 +716,47 @@ public sealed class ManagedLinkRegistryTests
         public Task<ManagedLinkRecord> RefreshAsync(ManagedLinkRecord record)
         {
             return Task.FromResult(record);
+        }
+    }
+
+    private sealed class BlockingUiStateStorage : IRegistryStorageService
+    {
+        public ManagedLinkRegistryDocument Registry { get; } = new();
+
+        public ExecutionHistoryDocument History { get; } = new();
+
+        public WorkspaceUiStateDocument UiState { get; } = new();
+
+        public Task<ManagedLinkRegistryDocument> LoadRegistryAsync()
+        {
+            return Task.FromResult(Registry);
+        }
+
+        public Task SaveRegistryAsync(ManagedLinkRegistryDocument document)
+        {
+            Registry.Records = document.Records;
+            return Task.CompletedTask;
+        }
+
+        public Task<ExecutionHistoryDocument> LoadHistoryAsync()
+        {
+            return Task.FromResult(History);
+        }
+
+        public Task SaveHistoryAsync(ExecutionHistoryDocument document)
+        {
+            History.Entries = document.Entries;
+            return Task.CompletedTask;
+        }
+
+        public Task<WorkspaceUiStateDocument> LoadUiStateAsync()
+        {
+            return Task.FromResult(UiState);
+        }
+
+        public Task SaveUiStateAsync(WorkspaceUiStateDocument document)
+        {
+            return new TaskCompletionSource().Task;
         }
     }
 

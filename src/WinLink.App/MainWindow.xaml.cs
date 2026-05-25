@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using WinLink.App.Dialogs;
+using WinLink.App.Services;
 using WinLink.App.ViewModels;
 
 namespace WinLink.App;
@@ -193,10 +194,10 @@ public partial class MainWindow : Window
         var result = await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade);
         MessageBox.Show(
             this,
-            $"成功 {result.HistoryEntry.SuccessCount}，跳过 {result.HistoryEntry.SkippedCount}，失败 {result.HistoryEntry.FailedCount}",
+            ExecutionResultMessageFormatter.Format(result.HistoryEntry),
             "预设应用完成",
             MessageBoxButton.OK,
-            MessageBoxImage.Information);
+            result.HistoryEntry.FailedCount > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
     private async void ValidateAllButton_OnClick(object sender, RoutedEventArgs e)
@@ -250,10 +251,10 @@ public partial class MainWindow : Window
         var result = await viewModel.ExecutePendingTasksAsync(plan, allowDowngrade);
         MessageBox.Show(
             this,
-            $"成功 {result.HistoryEntry.SuccessCount}，跳过 {result.HistoryEntry.SkippedCount}，失败 {result.HistoryEntry.FailedCount}",
+            ExecutionResultMessageFormatter.Format(result.HistoryEntry),
             "批量执行完成",
             MessageBoxButton.OK,
-            MessageBoxImage.Information);
+            result.HistoryEntry.FailedCount > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
     private void TargetsDataGrid_OnCellEditEnding(object sender, DataGridCellEditEndingEventArgs e)

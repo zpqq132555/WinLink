@@ -85,7 +85,7 @@ public sealed class JsonRegistryStorageService : IRegistryStorageService
         }
 
         await using var stream = File.OpenRead(filePath);
-        var document = await JsonSerializer.DeserializeAsync<TDocument>(stream, SerializerOptions);
+        var document = await JsonSerializer.DeserializeAsync<TDocument>(stream, SerializerOptions).ConfigureAwait(false);
         return document ?? factory();
     }
 
@@ -93,6 +93,6 @@ public sealed class JsonRegistryStorageService : IRegistryStorageService
     {
         directories.EnsureStorageDirectory();
         await using var stream = File.Create(filePath);
-        await JsonSerializer.SerializeAsync(stream, document, SerializerOptions);
+        await JsonSerializer.SerializeAsync(stream, document, SerializerOptions).ConfigureAwait(false);
     }
 }

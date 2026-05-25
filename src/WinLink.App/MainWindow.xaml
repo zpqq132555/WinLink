@@ -307,12 +307,7 @@
                         </GroupBox>
 
                         <GroupBox Grid.Row="1" Grid.Column="2" Header="详情">
-                            <Expander Margin="12"
-                                      IsExpanded="{Binding SelectedManagedLink.IsExpanded, Mode=TwoWay}"
-                                      Expanded="ManagedLinkDetailsExpander_OnExpanded"
-                                      Collapsed="ManagedLinkDetailsExpander_OnCollapsed"
-                                      Header="源与目标详情">
-                                <Grid Margin="0,12,0,0">
+                            <Grid Margin="12">
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
@@ -381,7 +376,6 @@
                                         </DockPanel>
                                     </GroupBox>
                                 </Grid>
-                            </Expander>
                         </GroupBox>
                     </Grid>
                 </TabItem>

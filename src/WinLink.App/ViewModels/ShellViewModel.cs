@@ -18,6 +18,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     private readonly PresetTemplateService presetTemplateService;
     private readonly IRegistryStorageService registryStorageService;
     private readonly ILinkTaskWorkbenchService workbenchService;
+    private readonly SemaphoreSlim uiStateSaveLock = new(1, 1);
     private bool suppressManagedLinkUiStatePersistence;
     private string directoryTargetDirectoryInput = string.Empty;
     private string directoryTargetNameInput = string.Empty;
@@ -56,7 +57,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
 
         PendingTasks =
         [
-            CreateDraftTask("AGENTS 分发", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AGENTS.md"), LinkSourceKind.File, includeSampleTargets: true),
+            CreateDraftTask("新任务", string.Empty, LinkSourceKind.Unknown, includeSampleTargets: false),
         ];
         SelectedTask = PendingTasks[0];
 
@@ -68,29 +69,36 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         [
             new PresetTemplateDefinition
             {
+                Id = "preset-agents-main-distribution",
                 Name = "AGENTS 主配置分发",
-                Description = "把当前用户主目录下的 AGENTS 配置映射到常用工作目录。",
-                SourcePathTemplate = "%USERPROFILE%\\AGENTS.md",
+                Description = "把 AGENTS_BAK 主配置分发到 Codex 和 Claude 的主配置文件。",
+                SourcePathTemplate = "%USERPROFILE%\\.agents\\skills\\AGENTS_BAK.md",
                 Targets =
                 [
                     new PresetTemplateTarget
                     {
-                        DisplayName = "当前工作区",
-                        TargetPathTemplate = "%WORKSPACE%\\AGENTS.md",
+                        DisplayName = "Codex AGENTS",
+                        TargetPathTemplate = "%USERPROFILE%\\.codex\\AGENTS.md",
+                    },
+                    new PresetTemplateTarget
+                    {
+                        DisplayName = "Claude CLAUDE",
+                        TargetPathTemplate = "%USERPROFILE%\\.claude\\CLAUDE.md",
                     },
                 ],
             },
             new PresetTemplateDefinition
             {
+                Id = "preset-skills-directory-sync",
                 Name = "skills 目录同步",
-                Description = "把用户级 skills 目录映射到当前工作区，便于本地扩展共享。",
-                SourcePathTemplate = "%USERPROFILE%\\.codex\\skills",
+                Description = "把 %USERPROFILE%\\.agents\\skills 目录同步到 Claude skills 目录。",
+                SourcePathTemplate = "%USERPROFILE%\\.agents\\skills",
                 Targets =
                 [
                     new PresetTemplateTarget
                     {
-                        DisplayName = "工作区 skills",
-                        TargetPathTemplate = "%WORKSPACE%\\.codex\\skills",
+                        DisplayName = "Claude skills",
+                        TargetPathTemplate = "%USERPROFILE%\\.claude\\skills",
                     },
                 ],
             },
@@ -486,16 +494,16 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// </summary>
     public async Task RefreshManagedLinksAsync(bool autoTriggered = false)
     {
-        PersistManagedLinkUiState();
+        await PersistManagedLinkUiStateAsync();
 
-        var registry = registryStorageService.LoadRegistryAsync().GetAwaiter().GetResult();
+        var registry = await registryStorageService.LoadRegistryAsync();
         foreach (var record in registry.Records)
         {
             await linkStatusService.RefreshAsync(record);
         }
 
         await registryStorageService.SaveRegistryAsync(registry);
-        LoadManagedLinksFromStorage();
+        ApplyManagedLinks(registry);
         ShowStatus(autoTriggered ? "已自动刷新受管链接状态。" : "已刷新受管链接状态。");
     }
 
@@ -510,7 +518,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         }
 
         record.IsExpanded = isExpanded;
-        PersistManagedLinkUiState();
+        QueueManagedLinkUiStatePersistence();
     }
 
     /// <summary>
@@ -645,22 +653,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
 
     private void LoadManagedLinksFromStorage()
     {
-        ManagedLinks.Clear();
-
-        var expandedIds = new HashSet<string>(workspaceUiState.ExpandedManagedLinkIds, StringComparer.Ordinal);
         var registry = registryStorageService.LoadRegistryAsync().GetAwaiter().GetResult();
-        foreach (var record in registry.Records)
-        {
-            record.IsExpanded = expandedIds.Contains(record.Id);
-            ManagedLinks.Add(record);
-        }
-
-        suppressManagedLinkUiStatePersistence = true;
-        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, workspaceUiState.SelectedManagedLinkId, StringComparison.Ordinal))
-            ?? ManagedLinks.FirstOrDefault();
-        suppressManagedLinkUiStatePersistence = false;
-
-        OnPropertyChanged(nameof(ManagedSummary));
+        ApplyManagedLinks(registry);
     }
 
     private void LoadExecutionHistoryFromStorage()
@@ -680,17 +674,81 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return;
         }
 
-        PersistManagedLinkUiState();
+        QueueManagedLinkUiStatePersistence();
     }
 
-    private void PersistManagedLinkUiState()
+    private void QueueManagedLinkUiStatePersistence()
+    {
+        UpdateManagedLinkUiStateSnapshot();
+        var snapshot = CloneUiState(workspaceUiState);
+        _ = PersistManagedLinkUiStateInBackgroundAsync(snapshot);
+    }
+
+    private async Task PersistManagedLinkUiStateInBackgroundAsync(WorkspaceUiStateDocument snapshot)
+    {
+        await uiStateSaveLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await registryStorageService.SaveUiStateAsync(snapshot).ConfigureAwait(false);
+        }
+        finally
+        {
+            uiStateSaveLock.Release();
+        }
+    }
+
+    private async Task PersistManagedLinkUiStateAsync()
+    {
+        UpdateManagedLinkUiStateSnapshot();
+        var snapshot = CloneUiState(workspaceUiState);
+        await uiStateSaveLock.WaitAsync();
+        try
+        {
+            await registryStorageService.SaveUiStateAsync(snapshot);
+        }
+        finally
+        {
+            uiStateSaveLock.Release();
+        }
+    }
+
+    private void UpdateManagedLinkUiStateSnapshot()
     {
         workspaceUiState.SelectedManagedLinkId = SelectedManagedLink?.Id;
         workspaceUiState.ExpandedManagedLinkIds = ManagedLinks
             .Where(record => record.IsExpanded)
             .Select(record => record.Id)
             .ToList();
-        registryStorageService.SaveUiStateAsync(workspaceUiState).GetAwaiter().GetResult();
+    }
+
+    private static WorkspaceUiStateDocument CloneUiState(WorkspaceUiStateDocument source)
+    {
+        return new WorkspaceUiStateDocument
+        {
+            SchemaVersion = source.SchemaVersion,
+            SelectedPendingTaskId = source.SelectedPendingTaskId,
+            SelectedManagedLinkId = source.SelectedManagedLinkId,
+            ExpandedManagedLinkIds = [.. source.ExpandedManagedLinkIds],
+        };
+    }
+
+    private void ApplyManagedLinks(ManagedLinkRegistryDocument registry)
+    {
+        ManagedLinks.Clear();
+
+        var expandedIds = new HashSet<string>(workspaceUiState.ExpandedManagedLinkIds, StringComparer.Ordinal);
+        foreach (var record in registry.Records)
+        {
+            record.IsExpanded = expandedIds.Contains(record.Id);
+            ManagedLinks.Add(record);
+        }
+
+        suppressManagedLinkUiStatePersistence = true;
+        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, workspaceUiState.SelectedManagedLinkId, StringComparison.Ordinal))
+            ?? ManagedLinks.FirstOrDefault();
+        suppressManagedLinkUiStatePersistence = false;
+
+        OnPropertyChanged(nameof(ManagedSummary));
     }
 
     private bool SetProperty<TValue>(ref TValue storage, TValue value, [CallerMemberName] string? propertyName = null)
