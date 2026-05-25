@@ -433,6 +433,77 @@ public sealed class ManagedLinkRegistryTests
     }
 
     [Fact]
+    public async Task RebuildManagedTargetAsync_should_keep_current_record_and_target_selected()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var recordA = CreateRecord(Path.Combine(tempRoot, "source-a.txt"), LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            recordA.Id = "record-a";
+
+            var recordB = new ManagedLinkRecord
+            {
+                Id = "record-b",
+                DisplayName = "skills 同步",
+                SourcePath = Path.Combine(tempRoot, "source-b"),
+                SourceKind = LinkSourceKind.Directory,
+                PreferredStrategy = LinkCreationStrategy.Junction,
+                Targets =
+                [
+                    new ManagedLinkTargetRecord
+                    {
+                        Id = "target-b1",
+                        DisplayName = "Claude skills",
+                        TargetPath = Path.Combine(tempRoot, "targets", "claude-skills"),
+                        AppliedStrategy = LinkCreationStrategy.Junction,
+                    },
+                    new ManagedLinkTargetRecord
+                    {
+                        Id = "target-b2",
+                        DisplayName = "Workspace skills",
+                        TargetPath = Path.Combine(tempRoot, "targets", "workspace-skills"),
+                        AppliedStrategy = LinkCreationStrategy.Junction,
+                    },
+                ],
+            };
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [recordA, recordB],
+            });
+            await storage.SaveUiStateAsync(new WorkspaceUiStateDocument
+            {
+                SelectedManagedLinkId = "record-a",
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new NoopLinkOperationService(),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            viewModel.SelectedManagedLink = viewModel.ManagedLinks.Single(record => record.Id == "record-b");
+            viewModel.SelectedManagedTarget = viewModel.SelectedManagedLink.Targets.Single(target => target.Id == "target-b2");
+
+            var reason = await viewModel.RebuildManagedTargetAsync(viewModel.SelectedManagedTarget);
+
+            Assert.Null(reason);
+            Assert.Equal("record-b", viewModel.SelectedManagedLink?.Id);
+            Assert.Equal("target-b2", viewModel.SelectedManagedTarget?.Id);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ShellViewModel_should_start_with_a_single_empty_pending_task()
     {
         var tempRoot = CreateTemporaryDirectory();

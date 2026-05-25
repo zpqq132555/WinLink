@@ -494,6 +494,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// </summary>
     public async Task RefreshManagedLinksAsync(bool autoTriggered = false)
     {
+        var selectedRecordId = SelectedManagedLink?.Id;
+        var selectedTargetId = SelectedManagedTarget?.Id;
         await PersistManagedLinkUiStateAsync();
 
         var registry = await registryStorageService.LoadRegistryAsync();
@@ -503,7 +505,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         }
 
         await registryStorageService.SaveRegistryAsync(registry);
-        ApplyManagedLinks(registry);
+        ApplyManagedLinks(registry, selectedRecordId, selectedTargetId);
         ShowStatus(autoTriggered ? "已自动刷新受管链接状态。" : "已刷新受管链接状态。");
     }
 
@@ -555,8 +557,10 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             return "请先选择一个受管目标。";
         }
 
+        var selectedRecordId = SelectedManagedLink.Id;
+        var selectedTargetId = target.Id;
         var reason = await linkOperationService.RebuildAsync(SelectedManagedLink, target);
-        LoadManagedLinksFromStorage();
+        LoadManagedLinksFromStorage(selectedRecordId, selectedTargetId);
         LoadExecutionHistoryFromStorage();
         ShowStatus(reason is null ? $"已重建目标：{target.DisplayName}" : $"重建链接失败：{target.DisplayName}");
         return reason;
@@ -651,10 +655,10 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         workspaceUiState = registryStorageService.LoadUiStateAsync().GetAwaiter().GetResult();
     }
 
-    private void LoadManagedLinksFromStorage()
+    private void LoadManagedLinksFromStorage(string? preferredRecordId = null, string? preferredTargetId = null)
     {
         var registry = registryStorageService.LoadRegistryAsync().GetAwaiter().GetResult();
-        ApplyManagedLinks(registry);
+        ApplyManagedLinks(registry, preferredRecordId, preferredTargetId);
     }
 
     private void LoadExecutionHistoryFromStorage()
@@ -732,7 +736,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         };
     }
 
-    private void ApplyManagedLinks(ManagedLinkRegistryDocument registry)
+    private void ApplyManagedLinks(ManagedLinkRegistryDocument registry, string? preferredRecordId = null, string? preferredTargetId = null)
     {
         ManagedLinks.Clear();
 
@@ -744,8 +748,14 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         }
 
         suppressManagedLinkUiStatePersistence = true;
-        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, workspaceUiState.SelectedManagedLinkId, StringComparison.Ordinal))
+        var selectedRecordId = preferredRecordId ?? workspaceUiState.SelectedManagedLinkId;
+        SelectedManagedLink = ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, selectedRecordId, StringComparison.Ordinal))
             ?? ManagedLinks.FirstOrDefault();
+        if (SelectedManagedLink is not null)
+        {
+            SelectedManagedTarget = SelectedManagedLink.Targets.FirstOrDefault(target => string.Equals(target.Id, preferredTargetId, StringComparison.Ordinal))
+                ?? SelectedManagedLink.Targets.FirstOrDefault();
+        }
         suppressManagedLinkUiStatePersistence = false;
 
         OnPropertyChanged(nameof(ManagedSummary));
