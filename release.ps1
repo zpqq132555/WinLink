@@ -94,8 +94,12 @@ function Ensure-TagExistsLocally {
         [string]$TagName
     )
 
-    git rev-parse --verify $TagName 1>$null 2>$null
-    return $LASTEXITCODE -eq 0
+    $localTag = git tag --list $TagName
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to check local tag state."
+    }
+
+    return -not [string]::IsNullOrWhiteSpace($localTag)
 }
 
 function Ensure-TagExistsOnRemote {
