@@ -94,7 +94,7 @@ function Ensure-TagExistsLocally {
         [string]$TagName
     )
 
-    git rev-parse --verify $TagName *> $null
+    git rev-parse --verify $TagName 1>$null 2>$null
     return $LASTEXITCODE -eq 0
 }
 
