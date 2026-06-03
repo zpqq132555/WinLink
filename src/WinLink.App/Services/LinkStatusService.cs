@@ -10,21 +10,90 @@ namespace WinLink.App.Services;
 /// </summary>
 public sealed class LinkStatusService : ILinkStatusService
 {
-    /// <summary>
-    /// 逐个检查指定记录下的所有目标，并写回最新状态与原因。
-    /// </summary>
+    /// <inheritdoc />
     public Task<ManagedLinkRecord> RefreshAsync(ManagedLinkRecord record)
     {
-        foreach (var target in record.Targets)
+        if (record.Mode == ManagedPathMode.DirectoryMirror)
         {
-            var inspection = ManagedLinkTargetInspector.Inspect(record.SourceKind, record.SourcePath, target);
-            target.State = inspection.State;
-            target.StatusReason = inspection.Reason;
-            target.LastCheckedAt = inspection.CheckedAt;
+            RefreshDirectoryMirrorRecord(record);
+        }
+        else
+        {
+            foreach (var target in record.Targets)
+            {
+                var inspection = ManagedLinkTargetInspector.Inspect(record.SourceKind, record.SourcePath, target);
+                target.State = inspection.State;
+                target.StatusReason = inspection.Reason;
+                target.LastCheckedAt = inspection.CheckedAt;
+            }
         }
 
         record.UpdatedAt = DateTimeOffset.Now;
         return Task.FromResult(record);
+    }
+
+    private static void RefreshDirectoryMirrorRecord(ManagedLinkRecord record)
+    {
+        var now = DateTimeOffset.Now;
+        var sourceExists = Directory.Exists(record.SourcePath);
+        var sourceSnapshot = sourceExists
+            ? DirectoryMirrorService.CaptureSnapshot(record.SourcePath)
+            : null;
+        var sourceChanged = sourceExists &&
+                            !DirectoryMirrorService.SnapshotsEqual(record.LastSynchronizedSourceSnapshot, sourceSnapshot);
+
+        foreach (var target in record.Targets)
+        {
+            if (!sourceExists)
+            {
+                target.State = LinkTargetState.Invalid;
+                target.StatusReason = $"源目录不存在：{record.SourcePath}";
+                target.LastCheckedAt = now;
+                continue;
+            }
+
+            if (File.Exists(target.TargetPath))
+            {
+                target.State = LinkTargetState.Warning;
+                target.StatusReason = "目标路径当前是文件，无法按目录镜像同步。";
+                target.LastCheckedAt = now;
+                continue;
+            }
+
+            if (!Directory.Exists(target.TargetPath))
+            {
+                target.State = LinkTargetState.Disconnected;
+                target.StatusReason = $"目标目录不存在：{target.TargetPath}";
+                target.LastCheckedAt = now;
+                continue;
+            }
+
+            var targetSnapshot = DirectoryMirrorService.CaptureSnapshot(target.TargetPath);
+            var targetChanged = !DirectoryMirrorService.SnapshotsEqual(target.LastSynchronizedSnapshot, targetSnapshot);
+
+            if (sourceChanged && targetChanged)
+            {
+                target.State = LinkTargetState.Warning;
+                target.StatusReason = "检测到源目录变化，且目标存在本地改动。同步将覆盖目标改动并清理多余内容。";
+            }
+            else if (sourceChanged)
+            {
+                target.State = LinkTargetState.PendingSync;
+                target.StatusReason = "检测到源目录变化，可以同步到所有目标目录。";
+            }
+            else if (targetChanged)
+            {
+                target.State = LinkTargetState.Warning;
+                target.StatusReason = "目标目录存在本地改动，下一次同步会覆盖这些改动并清理多余内容。";
+            }
+            else
+            {
+                target.State = LinkTargetState.Active;
+                target.StatusReason = "目标目录与最近一次同步基线一致。";
+            }
+
+            target.LastCheckedAt = now;
+        }
     }
 }
 

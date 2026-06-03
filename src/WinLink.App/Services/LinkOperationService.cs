@@ -4,7 +4,7 @@ using WinLink.App.Models;
 namespace WinLink.App.Services;
 
 /// <summary>
-/// 负责完整校验、执行规划、尽力执行，以及受管记录的严格删除、重建与移除。
+/// 负责完整校验、执行规划、目录镜像同步，以及受管记录的删除与重建。
 /// </summary>
 public sealed class LinkOperationService : ILinkOperationService
 {
@@ -14,7 +14,7 @@ public sealed class LinkOperationService : ILinkOperationService
     private readonly ILinkTaskWorkbenchService workbenchService;
 
     /// <summary>
-    /// 使用路径服务、工作台服务、持久化服务和真实后端创建链接执行服务。
+    /// 使用路径服务、工作台服务、持久化服务和后端链接服务构造执行器。
     /// </summary>
     public LinkOperationService(
         IPathEnvironmentService pathEnvironmentService,
@@ -28,9 +28,7 @@ public sealed class LinkOperationService : ILinkOperationService
         this.backendService = backendService;
     }
 
-    /// <summary>
-    /// 对批量任务生成执行计划，并汇总所有需要统一确认的降级项。
-    /// </summary>
+    /// <inheritdoc />
     public Task<LinkExecutionPlan> PlanExecutionAsync(IEnumerable<LinkTaskDraft> tasks)
     {
         var plan = new LinkExecutionPlan();
@@ -42,7 +40,7 @@ public sealed class LinkOperationService : ILinkOperationService
                 var plannedTarget = BuildPlannedTarget(task, target);
                 plan.Targets.Add(plannedTarget);
 
-                if (plannedTarget.RequiresDowngrade)
+                if (plannedTarget.Mode == ManagedPathMode.Link && plannedTarget.RequiresDowngrade)
                 {
                     plan.Downgrades.Add(new LinkExecutionDowngradeItem
                     {
@@ -59,9 +57,7 @@ public sealed class LinkOperationService : ILinkOperationService
         return Task.FromResult(plan);
     }
 
-    /// <summary>
-    /// 对批量任务执行完整校验，覆盖源存在性、目标冲突和策略可用性。
-    /// </summary>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<string>> ValidateAsync(IEnumerable<LinkTaskDraft> tasks)
     {
         var issues = new List<string>();
@@ -88,7 +84,12 @@ public sealed class LinkOperationService : ILinkOperationService
             }
             else if (task.SourceKind != LinkSourceKind.Unknown && task.SourceKind != actualKind)
             {
-                issues.Add($"任务“{task.DisplayName}”的源类型已变化，请重新锁定源类型。");
+                issues.Add($"任务“{task.DisplayName}”的源类型已变化，请重新识别源类型。");
+            }
+
+            if (task.Mode == ManagedPathMode.DirectoryMirror && actualKind != LinkSourceKind.Directory)
+            {
+                issues.Add($"任务“{task.DisplayName}”只有目录源才能使用镜像模式。");
             }
 
             if (task.Targets.Count == 0)
@@ -133,7 +134,9 @@ public sealed class LinkOperationService : ILinkOperationService
             }
         }
 
-        foreach (var plannedTarget in plan.Targets.Where(item => item.PlannedStrategy == LinkCreationStrategy.Auto))
+        foreach (var plannedTarget in plan.Targets.Where(item =>
+                     item.Mode == ManagedPathMode.Link &&
+                     item.PlannedStrategy == LinkCreationStrategy.Auto))
         {
             issues.Add($"任务“{plannedTarget.TaskDisplayName}”的目标“{plannedTarget.Target.DisplayName}”缺少可用的链接策略。");
         }
@@ -141,9 +144,7 @@ public sealed class LinkOperationService : ILinkOperationService
         return issues;
     }
 
-    /// <summary>
-    /// 按执行计划执行批量创建，并以尽力执行方式记录成功、跳过和失败。
-    /// </summary>
+    /// <inheritdoc />
     public async Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade)
     {
         if (plan.Downgrades.Count > 0 && !allowDowngrade)
@@ -153,8 +154,9 @@ public sealed class LinkOperationService : ILinkOperationService
 
         var registry = await registryStorageService.LoadRegistryAsync();
         var history = await registryStorageService.LoadHistoryAsync();
-
         var managedRecordsByTask = new Dictionary<string, ManagedLinkRecord>(StringComparer.Ordinal);
+        var sourceSnapshots = new Dictionary<string, List<DirectorySnapshotEntry>>(StringComparer.OrdinalIgnoreCase);
+        var now = DateTimeOffset.Now;
         var historyEntry = new ExecutionHistoryEntry
         {
             Summary = string.Join("、", plan.Targets.Select(target => target.TaskDisplayName).Distinct()),
@@ -171,8 +173,7 @@ public sealed class LinkOperationService : ILinkOperationService
 
             try
             {
-                var appliedStrategy = await CreateWithFallbackAsync(plannedTarget);
-
+                var appliedStrategy = await ExecutePlannedTargetAsync(plannedTarget);
                 historyEntry.SuccessCount++;
 
                 var managedRecordKey = string.IsNullOrWhiteSpace(plannedTarget.ReusedManagedSourceRecordId)
@@ -187,22 +188,15 @@ public sealed class LinkOperationService : ILinkOperationService
                         DisplayName = plannedTarget.TaskDisplayName,
                         SourcePath = plannedTarget.SourcePath,
                         SourceKind = plannedTarget.SourceKind,
+                        Mode = plannedTarget.Mode,
                         PreferredStrategy = plannedTarget.RecommendedStrategy,
                     };
                     managedRecordsByTask.Add(managedRecordKey, record);
                 }
 
-                record.Targets.Add(new ManagedLinkTargetRecord
-                {
-                    Id = plannedTarget.Target.Id,
-                    DisplayName = plannedTarget.Target.DisplayName,
-                    TargetPath = plannedTarget.Target.TargetPath,
-                    AppliedStrategy = appliedStrategy,
-                    State = LinkTargetState.Active,
-                    StatusReason = "最近一次执行创建成功。",
-                    LastCheckedAt = DateTimeOffset.Now,
-                });
-                record.UpdatedAt = DateTimeOffset.Now;
+                ApplyExecutionMetadata(plannedTarget, record, sourceSnapshots, now);
+                record.Targets.Add(CreateManagedTargetRecord(plannedTarget, appliedStrategy, sourceSnapshots, now));
+                record.UpdatedAt = now;
             }
             catch (Exception ex)
             {
@@ -225,20 +219,106 @@ public sealed class LinkOperationService : ILinkOperationService
         };
     }
 
-    /// <summary>
-    /// 只在当前目标仍与记录严格匹配时删除链接对象；否则返回明确的阻止原因。
-    /// </summary>
+    /// <inheritdoc />
+    public async Task<LinkExecutionBatchResult> SyncMirrorAsync(ManagedLinkRecord record, bool allowTargetOverwrite)
+    {
+        var registry = await registryStorageService.LoadRegistryAsync();
+        var history = await registryStorageService.LoadHistoryAsync();
+        var storedRecord = FindRecord(registry, record.Id) ?? record;
+
+        if (storedRecord.Mode != ManagedPathMode.DirectoryMirror)
+        {
+            throw new InvalidOperationException("当前记录不是目录镜像模式。");
+        }
+
+        if (pathEnvironmentService.DetectSourceKind(storedRecord.SourcePath) != LinkSourceKind.Directory)
+        {
+            throw new InvalidOperationException($"源目录不存在，无法同步：{storedRecord.SourcePath}");
+        }
+
+        var sourceSnapshot = DirectoryMirrorService.CaptureSnapshot(storedRecord.SourcePath);
+        foreach (var target in storedRecord.Targets)
+        {
+            if (!allowTargetOverwrite && HasMirrorTargetLocalChanges(target))
+            {
+                throw new InvalidOperationException($"目标“{target.DisplayName}”存在本地改动，请确认是否覆盖。");
+            }
+        }
+
+        var now = DateTimeOffset.Now;
+        var historyEntry = new ExecutionHistoryEntry
+        {
+            Summary = $"同步目录镜像：{storedRecord.DisplayName}",
+        };
+
+        foreach (var target in storedRecord.Targets)
+        {
+            try
+            {
+                DirectoryMirrorService.MirrorDirectory(storedRecord.SourcePath, target.TargetPath);
+                target.LastSynchronizedSnapshot = DirectoryMirrorService.CloneSnapshot(sourceSnapshot);
+                target.LastSynchronizedAt = now;
+                target.LastCheckedAt = now;
+                target.State = LinkTargetState.Active;
+                target.StatusReason = "已按源目录完成镜像同步。";
+                historyEntry.SuccessCount++;
+            }
+            catch (Exception ex)
+            {
+                target.LastCheckedAt = now;
+                target.State = LinkTargetState.Warning;
+                target.StatusReason = $"镜像同步失败：{ex.Message}";
+                historyEntry.FailedCount++;
+                historyEntry.FailureReasons.Add($"{target.TargetPath}：{ex.Message}");
+            }
+        }
+
+        storedRecord.LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(sourceSnapshot);
+        storedRecord.LastSynchronizedAt = now;
+        storedRecord.UpdatedAt = now;
+
+        history.Entries.Insert(0, historyEntry);
+        history.Entries = history.Entries.Take(20).ToList();
+
+        await registryStorageService.SaveRegistryAsync(registry);
+        await registryStorageService.SaveHistoryAsync(history);
+
+        return new LinkExecutionBatchResult
+        {
+            HistoryEntry = historyEntry,
+            ManagedRecords = registry.Records,
+        };
+    }
+
+    /// <inheritdoc />
     public async Task<string?> DeleteAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target)
     {
+        if (record.Mode == ManagedPathMode.DirectoryMirror)
+        {
+            if (!File.Exists(target.TargetPath) && !Directory.Exists(target.TargetPath))
+            {
+                return "目标已不存在，无需再次删除。你可以改用“移除记录”清理登记。";
+            }
+
+            DirectoryMirrorService.DeleteTargetPath(target.TargetPath);
+            await UpdateStoredTargetAsync(record, target, storedTarget =>
+            {
+                storedTarget.State = LinkTargetState.Disconnected;
+                storedTarget.StatusReason = "镜像目标已删除，可按需重新同步。";
+                storedTarget.LastCheckedAt = DateTimeOffset.Now;
+            });
+            return null;
+        }
+
         var inspection = ManagedLinkTargetInspector.Inspect(record.SourceKind, record.SourcePath, target);
         if (!inspection.CanDeleteSafely)
         {
             return inspection.EntryExists
                 ? inspection.Reason
-                : "目标已不存在，无需再删除链接。你可以改用“移除记录”清理登记。";
+                : "目标已不存在，无需再次删除链接。你可以改用“移除记录”清理登记。";
         }
 
-        DeleteTargetEntity(record.SourceKind, target);
+        DeleteLinkedTargetEntity(record.SourceKind, target);
         await UpdateStoredTargetAsync(record, target, storedTarget =>
         {
             storedTarget.State = LinkTargetState.Disconnected;
@@ -248,14 +328,20 @@ public sealed class LinkOperationService : ILinkOperationService
         return null;
     }
 
-    /// <summary>
-    /// 复用标准创建管道重新创建某个已记录目标；若当前对象仍占位，会先做安全删除检查。
-    /// </summary>
+    /// <inheritdoc />
     public async Task<string?> RebuildAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target)
     {
         var registry = await registryStorageService.LoadRegistryAsync();
         var currentRecord = FindRecord(registry, record.Id) ?? record;
         var currentTarget = FindTarget(currentRecord, target.Id, target.TargetPath) ?? target;
+
+        if (currentRecord.Mode == ManagedPathMode.DirectoryMirror)
+        {
+            var syncResult = await SyncMirrorAsync(currentRecord, allowTargetOverwrite: true);
+            return syncResult.HistoryEntry.FailedCount > 0
+                ? syncResult.HistoryEntry.FailureReasons.FirstOrDefault() ?? $"目标“{currentTarget.DisplayName}”同步失败。"
+                : null;
+        }
 
         var inspection = ManagedLinkTargetInspector.Inspect(currentRecord.SourceKind, currentRecord.SourcePath, currentTarget);
         if (inspection.EntryExists)
@@ -265,7 +351,7 @@ public sealed class LinkOperationService : ILinkOperationService
                 return $"当前目标无法安全重建：{inspection.Reason}";
             }
 
-            DeleteTargetEntity(currentRecord.SourceKind, currentTarget);
+            DeleteLinkedTargetEntity(currentRecord.SourceKind, currentTarget);
         }
 
         if (pathEnvironmentService.DetectSourceKind(currentRecord.SourcePath) == LinkSourceKind.Unknown)
@@ -279,6 +365,7 @@ public sealed class LinkOperationService : ILinkOperationService
             DisplayName = currentRecord.DisplayName,
             SourcePath = currentRecord.SourcePath,
             SourceKind = currentRecord.SourceKind,
+            Mode = currentRecord.Mode,
             PreferredStrategy = currentTarget.AppliedStrategy,
         };
         var draftTarget = new LinkTargetDraft
@@ -305,9 +392,7 @@ public sealed class LinkOperationService : ILinkOperationService
         return null;
     }
 
-    /// <summary>
-    /// 仅从注册表中移除某个目标记录，不影响当前磁盘实体。
-    /// </summary>
+    /// <inheritdoc />
     public async Task RemoveRecordAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target)
     {
         var registry = await registryStorageService.LoadRegistryAsync();
@@ -335,8 +420,13 @@ public sealed class LinkOperationService : ILinkOperationService
 
     private PlannedLinkTarget BuildPlannedTarget(LinkTaskDraft task, LinkTargetDraft target)
     {
-        var recommendedStrategy = GetRecommendedStrategy(task.SourceKind);
-        var plannedStrategy = ResolvePlannedStrategy(task.SourceKind, task.PreferredStrategy, recommendedStrategy, out var requiresDowngrade);
+        var requiresDowngrade = false;
+        var recommendedStrategy = task.Mode == ManagedPathMode.DirectoryMirror
+            ? LinkCreationStrategy.Auto
+            : GetRecommendedStrategy(task.SourceKind);
+        var plannedStrategy = task.Mode == ManagedPathMode.DirectoryMirror
+            ? LinkCreationStrategy.Auto
+            : ResolvePlannedStrategy(task.SourceKind, task.PreferredStrategy, recommendedStrategy, out requiresDowngrade);
 
         return new PlannedLinkTarget
         {
@@ -344,12 +434,90 @@ public sealed class LinkOperationService : ILinkOperationService
             TaskDisplayName = task.DisplayName,
             SourcePath = task.SourcePath,
             SourceKind = task.SourceKind,
+            Mode = task.Mode,
             ReusedManagedSourceRecordId = task.ReusedManagedSourceRecordId,
             Target = target,
             RecommendedStrategy = recommendedStrategy,
             PlannedStrategy = plannedStrategy,
-            RequiresDowngrade = requiresDowngrade,
+            RequiresDowngrade = task.Mode == ManagedPathMode.Link && requiresDowngrade,
         };
+    }
+
+    private async Task<LinkCreationStrategy> ExecutePlannedTargetAsync(PlannedLinkTarget plannedTarget)
+    {
+        if (plannedTarget.Mode == ManagedPathMode.DirectoryMirror)
+        {
+            DirectoryMirrorService.MirrorDirectory(plannedTarget.SourcePath, plannedTarget.Target.TargetPath);
+            return LinkCreationStrategy.Auto;
+        }
+
+        return await CreateWithFallbackAsync(plannedTarget);
+    }
+
+    private static void ApplyExecutionMetadata(
+        PlannedLinkTarget plannedTarget,
+        ManagedLinkRecord record,
+        IDictionary<string, List<DirectorySnapshotEntry>> sourceSnapshots,
+        DateTimeOffset now)
+    {
+        if (plannedTarget.Mode != ManagedPathMode.DirectoryMirror)
+        {
+            return;
+        }
+
+        if (!sourceSnapshots.TryGetValue(plannedTarget.SourcePath, out var sourceSnapshot))
+        {
+            sourceSnapshot = DirectoryMirrorService.CaptureSnapshot(plannedTarget.SourcePath);
+            sourceSnapshots[plannedTarget.SourcePath] = sourceSnapshot;
+        }
+
+        record.LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(sourceSnapshot);
+        record.LastSynchronizedAt = now;
+    }
+
+    private static ManagedLinkTargetRecord CreateManagedTargetRecord(
+        PlannedLinkTarget plannedTarget,
+        LinkCreationStrategy appliedStrategy,
+        IDictionary<string, List<DirectorySnapshotEntry>> sourceSnapshots,
+        DateTimeOffset now)
+    {
+        var targetRecord = new ManagedLinkTargetRecord
+        {
+            Id = plannedTarget.Target.Id,
+            DisplayName = plannedTarget.Target.DisplayName,
+            TargetPath = plannedTarget.Target.TargetPath,
+            AppliedStrategy = appliedStrategy,
+            State = LinkTargetState.Active,
+            StatusReason = plannedTarget.Mode == ManagedPathMode.DirectoryMirror
+                ? "已完成首次镜像拷贝。"
+                : "最近一次执行创建成功。",
+            LastCheckedAt = now,
+        };
+
+        if (plannedTarget.Mode == ManagedPathMode.DirectoryMirror &&
+            sourceSnapshots.TryGetValue(plannedTarget.SourcePath, out var sourceSnapshot))
+        {
+            targetRecord.LastSynchronizedSnapshot = DirectoryMirrorService.CloneSnapshot(sourceSnapshot);
+            targetRecord.LastSynchronizedAt = now;
+        }
+
+        return targetRecord;
+    }
+
+    private static bool HasMirrorTargetLocalChanges(ManagedLinkTargetRecord target)
+    {
+        if (File.Exists(target.TargetPath))
+        {
+            return true;
+        }
+
+        if (!Directory.Exists(target.TargetPath))
+        {
+            return false;
+        }
+
+        var currentSnapshot = DirectoryMirrorService.CaptureSnapshot(target.TargetPath);
+        return !DirectoryMirrorService.SnapshotsEqual(target.LastSynchronizedSnapshot, currentSnapshot);
     }
 
     private LinkCreationStrategy ResolvePlannedStrategy(
@@ -398,7 +566,7 @@ public sealed class LinkOperationService : ILinkOperationService
         await registryStorageService.SaveRegistryAsync(registry);
     }
 
-    private static void DeleteTargetEntity(LinkSourceKind sourceKind, ManagedLinkTargetRecord target)
+    private static void DeleteLinkedTargetEntity(LinkSourceKind sourceKind, ManagedLinkTargetRecord target)
     {
         if (sourceKind == LinkSourceKind.Directory || target.AppliedStrategy == LinkCreationStrategy.Junction)
         {
@@ -500,7 +668,10 @@ public sealed class LinkOperationService : ILinkOperationService
             existingRecord.DisplayName = newRecord.DisplayName;
             existingRecord.SourcePath = newRecord.SourcePath;
             existingRecord.SourceKind = newRecord.SourceKind;
+            existingRecord.Mode = newRecord.Mode;
             existingRecord.PreferredStrategy = newRecord.PreferredStrategy;
+            existingRecord.LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(newRecord.LastSynchronizedSourceSnapshot);
+            existingRecord.LastSynchronizedAt = newRecord.LastSynchronizedAt;
             existingRecord.UpdatedAt = newRecord.UpdatedAt;
 
             foreach (var newTarget in newRecord.Targets)
@@ -520,6 +691,8 @@ public sealed class LinkOperationService : ILinkOperationService
                 existingTarget.AppliedStrategy = newTarget.AppliedStrategy;
                 existingTarget.State = newTarget.State;
                 existingTarget.StatusReason = newTarget.StatusReason;
+                existingTarget.LastSynchronizedSnapshot = DirectoryMirrorService.CloneSnapshot(newTarget.LastSynchronizedSnapshot);
+                existingTarget.LastSynchronizedAt = newTarget.LastSynchronizedAt;
                 existingTarget.LastCheckedAt = newTarget.LastCheckedAt;
             }
         }
@@ -531,7 +704,8 @@ public sealed class LinkOperationService : ILinkOperationService
             ?? registry.Records.FirstOrDefault(record =>
                 string.Equals(record.DisplayName, newRecord.DisplayName, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(NormalizeManagedPath(record.SourcePath), NormalizeManagedPath(newRecord.SourcePath), StringComparison.OrdinalIgnoreCase) &&
-                record.SourceKind == newRecord.SourceKind);
+                record.SourceKind == newRecord.SourceKind &&
+                record.Mode == newRecord.Mode);
     }
 
     private static string NormalizeManagedPath(string path)

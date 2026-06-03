@@ -55,7 +55,7 @@ public interface IRegistryStorageService
 }
 
 /// <summary>
-/// 抽象 `新建链接` 工作台中的任务编辑、目标录入与轻量预检查行为。
+/// 抽象“新建链接”工作台中的任务编辑、目标录入与轻量预检查行为。
 /// </summary>
 public interface ILinkTaskWorkbenchService
 {
@@ -86,7 +86,7 @@ public interface ILinkTaskWorkbenchService
 }
 
 /// <summary>
-/// 抽象具体的 Windows 链接创建后端，便于在执行逻辑与真实文件系统之间解耦。
+/// 抽象具体的 Windows 链接创建后端。
 /// </summary>
 public interface ILinkBackendService
 {
@@ -102,7 +102,7 @@ public interface ILinkBackendService
 }
 
 /// <summary>
-/// 抽象链接创建、重建与严格删除等动作。
+/// 抽象链接创建、目录镜像同步、重建与严格删除等动作。
 /// </summary>
 public interface ILinkOperationService
 {
@@ -122,17 +122,22 @@ public interface ILinkOperationService
     Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade);
 
     /// <summary>
+    /// 将目录镜像源同步到当前记录下的所有目标目录。
+    /// </summary>
+    Task<LinkExecutionBatchResult> SyncMirrorAsync(ManagedLinkRecord record, bool allowTargetOverwrite);
+
+    /// <summary>
     /// 对单个目标执行严格删除。
     /// </summary>
     Task<string?> DeleteAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target);
 
     /// <summary>
-    /// 鍩轰簬宸茶褰曠殑婧愪笌鐩爣鏄犲皠閲嶆柊鍒涘缓鍗曚釜鐩爣閾炬帴銆?
+    /// 对单个目标执行重建。
     /// </summary>
     Task<string?> RebuildAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target);
 
     /// <summary>
-    /// 浠呬粠鍙楃娉ㄥ唽琛ㄤ腑绉婚櫎鏌愪釜鐩爣璁板綍锛屼笉瑙﹀姩褰撳墠纾佺洏瀹炰綋銆?
+    /// 仅移除注册表中的目标记录，不影响当前磁盘实体。
     /// </summary>
     Task RemoveRecordAsync(ManagedLinkRecord record, ManagedLinkTargetRecord target);
 }

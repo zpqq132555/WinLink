@@ -1,7 +1,7 @@
 namespace WinLink.App.Models;
 
 /// <summary>
-/// 表示“新建连接”中可直接复用的已连接源候选。
+/// 表示“新建链接”中可直接复用的已连接源候选。
 /// </summary>
 public sealed class ManagedLinkSourceOption
 {
@@ -29,6 +29,11 @@ public sealed class ManagedLinkSourceOption
     /// 候选源默认偏好的创建策略。
     /// </summary>
     public LinkCreationStrategy PreferredStrategy { get; set; } = LinkCreationStrategy.Auto;
+
+    /// <summary>
+    /// 候选源当前使用的受管模式。
+    /// </summary>
+    public ManagedPathMode Mode { get; set; } = ManagedPathMode.Link;
 
     /// <summary>
     /// 下拉列表中实际展示给用户的文案。

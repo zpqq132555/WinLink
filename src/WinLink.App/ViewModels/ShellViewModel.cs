@@ -13,7 +13,7 @@ namespace WinLink.App.ViewModels;
 /// </summary>
 public sealed class ShellViewModel : INotifyPropertyChanged
 {
-    private readonly record struct ManagedLinkGroupKey(string DisplayName, string SourcePath, LinkSourceKind SourceKind);
+    private readonly record struct ManagedLinkGroupKey(string DisplayName, string SourcePath, LinkSourceKind SourceKind, ManagedPathMode Mode);
 
     private readonly ILinkOperationService linkOperationService;
     private readonly ILinkStatusService linkStatusService;
@@ -161,6 +161,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsSelectedTaskReusingManagedSource));
             OnPropertyChanged(nameof(CanEditSelectedTaskSource));
             OnPropertyChanged(nameof(SelectedTaskSourceLockHint));
+            OnPropertyChanged(nameof(CanEditSelectedTaskStrategy));
+            OnPropertyChanged(nameof(SelectedTaskModeHint));
         }
     }
 
@@ -200,6 +202,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         SelectedTask.DisplayName = option.DisplayName;
         SelectedTask.SourcePath = option.SourcePath;
         SelectedTask.SourceKind = option.SourceKind;
+        SelectedTask.Mode = option.Mode;
         SelectedTask.PreferredStrategy = option.PreferredStrategy;
         ResetTargetInputHints();
         workbenchService.RunLightValidation(SelectedTask);
@@ -267,6 +270,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             }
 
             SelectedManagedTarget = value?.Targets.FirstOrDefault();
+            OnPropertyChanged(nameof(CanSyncSelectedManagedMirror));
+            OnPropertyChanged(nameof(SelectedManagedLinkModeDisplay));
             PersistManagedLinkUiStateIfNeeded();
         }
     }
@@ -279,6 +284,21 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         get => selectedManagedTarget;
         set => SetProperty(ref selectedManagedTarget, value);
     }
+
+    /// <summary>
+    /// 当前选中的受管记录是否支持“同步到所有目标”。
+    /// </summary>
+    public bool CanSyncSelectedManagedMirror => SelectedManagedLink?.Mode == ManagedPathMode.DirectoryMirror;
+
+    /// <summary>
+    /// 当前选中的受管记录模式名称。
+    /// </summary>
+    public string SelectedManagedLinkModeDisplay => SelectedManagedLink?.Mode switch
+    {
+        ManagedPathMode.DirectoryMirror => "目录镜像",
+        ManagedPathMode.Link => "链接",
+        _ => string.Empty,
+    };
 
     /// <summary>
     /// 内置预设模板列表。
@@ -326,6 +346,27 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         LinkCreationStrategy.Junction,
         LinkCreationStrategy.HardLink,
     ];
+
+    /// <summary>
+    /// 工作台可选的受管模式列表。
+    /// </summary>
+    public IReadOnlyList<ManagedPathMode> TaskModeOptions { get; } =
+    [
+        ManagedPathMode.Link,
+        ManagedPathMode.DirectoryMirror,
+    ];
+
+    /// <summary>
+    /// 当前任务是否仍允许编辑高级链接策略。
+    /// </summary>
+    public bool CanEditSelectedTaskStrategy => SelectedTask?.Mode != ManagedPathMode.DirectoryMirror;
+
+    /// <summary>
+    /// 当前任务模式提示。
+    /// </summary>
+    public string SelectedTaskModeHint => SelectedTask?.Mode == ManagedPathMode.DirectoryMirror
+        ? "镜像模式会真实拷贝目录；后续同步会覆盖目标改动并清理目标中多余内容。"
+        : string.Empty;
 
     /// <summary>
     /// `已链接` 页顶部总览摘要。
@@ -676,6 +717,51 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// <summary>
     /// 仅移除当前选中目标的受管记录，不影响磁盘上的现有实体。
     /// </summary>
+    public async Task<LinkExecutionBatchResult?> SyncSelectedManagedMirrorAsync(bool allowTargetOverwrite)
+    {
+        if (SelectedManagedLink is null || SelectedManagedLink.Mode != ManagedPathMode.DirectoryMirror)
+        {
+            return null;
+        }
+
+        var sourceRecordIds = managedLinkSourceRecordIds.TryGetValue(SelectedManagedLink, out var ids)
+            ? ids.ToList()
+            : [SelectedManagedLink.Id];
+        var aggregateResult = new LinkExecutionBatchResult
+        {
+            HistoryEntry = new ExecutionHistoryEntry
+            {
+                Summary = $"同步目录镜像：{SelectedManagedLink.DisplayName}",
+            },
+        };
+        var selectedTargetId = SelectedManagedTarget?.Id;
+        foreach (var sourceRecordId in sourceRecordIds)
+        {
+            var recordContext = new ManagedLinkRecord
+            {
+                Id = sourceRecordId,
+                DisplayName = SelectedManagedLink.DisplayName,
+                SourcePath = SelectedManagedLink.SourcePath,
+                SourceKind = SelectedManagedLink.SourceKind,
+                Mode = SelectedManagedLink.Mode,
+                PreferredStrategy = SelectedManagedLink.PreferredStrategy,
+                LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(SelectedManagedLink.LastSynchronizedSourceSnapshot),
+                LastSynchronizedAt = SelectedManagedLink.LastSynchronizedAt,
+            };
+            var result = await linkOperationService.SyncMirrorAsync(recordContext, allowTargetOverwrite);
+            aggregateResult.HistoryEntry.SuccessCount += result.HistoryEntry.SuccessCount;
+            aggregateResult.HistoryEntry.SkippedCount += result.HistoryEntry.SkippedCount;
+            aggregateResult.HistoryEntry.FailedCount += result.HistoryEntry.FailedCount;
+            aggregateResult.HistoryEntry.FailureReasons.AddRange(result.HistoryEntry.FailureReasons);
+            aggregateResult.ManagedRecords = result.ManagedRecords;
+        }
+        ExecutionSummary = $"本次执行：成功 {aggregateResult.HistoryEntry.SuccessCount}，跳过 {aggregateResult.HistoryEntry.SkippedCount}，失败 {aggregateResult.HistoryEntry.FailedCount}";
+        LoadManagedLinksFromStorage(SelectedManagedLink.Id, selectedTargetId);
+        LoadExecutionHistoryFromStorage();
+        ShowStatus($"已同步镜像目录：{SelectedManagedLink.DisplayName}");
+        return aggregateResult;
+    }
+
     public async Task RemoveManagedTargetRecordAsync(ManagedLinkTargetRecord? target)
     {
         if (SelectedManagedLink is null || target is null)
@@ -692,13 +778,27 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// <summary>
     /// 计算 `已链接` 页顶部摘要。
     /// </summary>
-    public (int Records, int Targets, int Active, int Invalid, int Disconnected) GetManagedSummary()
+    public IReadOnlyList<ManagedLinkRecord> GetMirrorRecordsNeedingSync()
+    {
+        return ManagedLinks
+            .Where(record => record.Mode == ManagedPathMode.DirectoryMirror &&
+                record.Targets.Any(target =>
+                    target.State == LinkTargetState.PendingSync ||
+                    (target.State == LinkTargetState.Warning &&
+                     !string.IsNullOrWhiteSpace(target.StatusReason) &&
+                     target.StatusReason.Contains("源目录", StringComparison.Ordinal))))
+            .ToList();
+    }
+
+    public (int Records, int Targets, int Active, int PendingSync, int Warning, int Invalid, int Disconnected) GetManagedSummary()
     {
         var targets = ManagedLinks.SelectMany(record => record.Targets).ToList();
         return (
             ManagedLinks.Count,
             targets.Count,
             targets.Count(target => target.State == LinkTargetState.Active),
+            targets.Count(target => target.State == LinkTargetState.PendingSync),
+            targets.Count(target => target.State == LinkTargetState.Warning),
             targets.Count(target => target.State == LinkTargetState.Invalid),
             targets.Count(target => target.State == LinkTargetState.Disconnected));
     }
@@ -721,6 +821,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             DisplayName = displayName,
             SourcePath = sourcePath,
             SourceKind = sourceKind,
+            Mode = ManagedPathMode.Link,
         };
 
         if (includeSampleTargets)
@@ -780,6 +881,14 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         if (string.Equals(e.PropertyName, nameof(LinkTaskDraft.ReusedManagedSourceRecordId), StringComparison.Ordinal))
         {
             RefreshSelectedTaskReusableManagedSourceState();
+            return;
+        }
+
+        if (string.Equals(e.PropertyName, nameof(LinkTaskDraft.Mode), StringComparison.Ordinal) ||
+            string.Equals(e.PropertyName, nameof(LinkTaskDraft.SourceKind), StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(CanEditSelectedTaskStrategy));
+            OnPropertyChanged(nameof(SelectedTaskModeHint));
         }
     }
 
@@ -800,6 +909,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsSelectedTaskReusingManagedSource));
         OnPropertyChanged(nameof(CanEditSelectedTaskSource));
         OnPropertyChanged(nameof(SelectedTaskSourceLockHint));
+        OnPropertyChanged(nameof(CanEditSelectedTaskStrategy));
+        OnPropertyChanged(nameof(SelectedTaskModeHint));
     }
 
     private void LoadUiStateFromStorage()
@@ -915,9 +1026,9 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ReusableManagedSources));
     }
 
-    private ManagedLinkRecord CreateManagedRecordContext(ManagedLinkRecord groupedRecord, ManagedLinkTargetRecord target)
+    private ManagedLinkRecord CreateManagedRecordContext(ManagedLinkRecord groupedRecord, ManagedLinkTargetRecord? target)
     {
-        if (!managedTargetSourceRecordIds.TryGetValue(target, out var recordId))
+        if (target is null || !managedTargetSourceRecordIds.TryGetValue(target, out var recordId))
         {
             recordId = groupedRecord.Id;
         }
@@ -928,7 +1039,11 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             DisplayName = groupedRecord.DisplayName,
             SourcePath = groupedRecord.SourcePath,
             SourceKind = groupedRecord.SourceKind,
+            Mode = groupedRecord.Mode,
             PreferredStrategy = groupedRecord.PreferredStrategy,
+            LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(groupedRecord.LastSynchronizedSourceSnapshot),
+            LastSynchronizedAt = groupedRecord.LastSynchronizedAt,
+            Targets = target is null ? [] : [CloneManagedTarget(target)],
         };
     }
 
@@ -957,6 +1072,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
                 SourcePath = record.SourcePath,
                 SourceKind = record.SourceKind,
                 PreferredStrategy = record.PreferredStrategy,
+                Mode = record.Mode,
                 DisplayLabel = namesRequiringPathDisambiguation.Contains(record.DisplayName)
                     ? $"{record.DisplayName} ({record.SourcePath})"
                     : record.DisplayName,
@@ -980,7 +1096,10 @@ public sealed class ShellViewModel : INotifyPropertyChanged
                     DisplayName = representative.DisplayName,
                     SourcePath = representative.SourcePath,
                     SourceKind = representative.SourceKind,
+                    Mode = representative.Mode,
                     PreferredStrategy = representative.PreferredStrategy,
+                    LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(representative.LastSynchronizedSourceSnapshot),
+                    LastSynchronizedAt = representative.LastSynchronizedAt,
                     CreatedAt = group.Min(record => record.CreatedAt),
                     UpdatedAt = group.Max(record => record.UpdatedAt),
                     IsExpanded = group.Any(record => expandedIds.Contains(record.Id)),
@@ -1021,7 +1140,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         return new ManagedLinkGroupKey(
             record.DisplayName.Trim(),
             NormalizeManagedLinkPath(record.SourcePath),
-            record.SourceKind);
+            record.SourceKind,
+            record.Mode);
     }
 
     private static ManagedLinkTargetRecord CloneManagedTarget(ManagedLinkTargetRecord source)
@@ -1034,6 +1154,8 @@ public sealed class ShellViewModel : INotifyPropertyChanged
             State = source.State,
             StatusReason = source.StatusReason,
             AppliedStrategy = source.AppliedStrategy,
+            LastSynchronizedSnapshot = DirectoryMirrorService.CloneSnapshot(source.LastSynchronizedSnapshot),
+            LastSynchronizedAt = source.LastSynchronizedAt,
             LastCheckedAt = source.LastCheckedAt,
         };
     }
@@ -1074,11 +1196,13 @@ public sealed class ManagedSummarySnapshot
     /// <summary>
     /// 用汇总元组创建只读摘要对象。
     /// </summary>
-    public ManagedSummarySnapshot((int Records, int Targets, int Active, int Invalid, int Disconnected) values)
+    public ManagedSummarySnapshot((int Records, int Targets, int Active, int PendingSync, int Warning, int Invalid, int Disconnected) values)
     {
         Records = values.Records;
         Targets = values.Targets;
         Active = values.Active;
+        PendingSync = values.PendingSync;
+        Warning = values.Warning;
         Invalid = values.Invalid;
         Disconnected = values.Disconnected;
     }
@@ -1097,6 +1221,10 @@ public sealed class ManagedSummarySnapshot
     /// 生效中的目标数量。
     /// </summary>
     public int Active { get; }
+
+    public int PendingSync { get; }
+
+    public int Warning { get; }
 
     /// <summary>
     /// 失效目标数量。

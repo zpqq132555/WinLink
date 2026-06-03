@@ -9,17 +9,16 @@
         Width="1260"
         Height="820"
         MinWidth="1080"
-        MinHeight="720">
+        MinHeight="720"
+        Loaded="Window_OnLoaded">
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_文件">
                 <MenuItem Click="ExitMenuItem_OnClick" Header="退出" />
             </MenuItem>
             <MenuItem Header="_工具">
-                <MenuItem Click="RefreshManagedLinksMenuItem_OnClick" Header="刷新已链接状态" />
+                <MenuItem Click="RefreshManagedLinksMenuItem_OnClick" Header="刷新已连接状态" />
                 <MenuItem Click="ExecutionHistoryMenuItem_OnClick" Header="执行历史" />
-                <Separator />
-                <MenuItem Header="扫描系统已有链接（预留）" IsEnabled="False" />
             </MenuItem>
             <MenuItem Header="_帮助">
                 <MenuItem Click="AboutMenuItem_OnClick" Header="关于" />
@@ -40,7 +39,7 @@
 
             <StackPanel Margin="0,0,0,16">
                 <TextBlock FontSize="28" FontWeight="SemiBold" Text="WinLink" />
-                <TextBlock Foreground="#5F6B7A" Text="创建、检查并管理由 WinLink 自己维护的文件与目录链接。" />
+                <TextBlock Foreground="#5F6B7A" Text="创建、检查并管理由 WinLink 维护的文件链接、目录链接与目录镜像同步。" />
             </StackPanel>
 
             <TabControl x:Name="MainTabControl" Grid.Row="1" SelectionChanged="MainTabControl_OnSelectionChanged">
@@ -58,9 +57,7 @@
 
                         <GroupBox Header="待执行任务">
                             <DockPanel Margin="12">
-                                <StackPanel DockPanel.Dock="Top"
-                                            Margin="0,0,0,10"
-                                            Orientation="Horizontal">
+                                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10" Orientation="Horizontal">
                                     <Button Margin="0,0,8,0" Padding="14,6" Click="AddPendingTaskButton_OnClick" Content="新增任务" />
                                     <Button Padding="14,6" Click="RemovePendingTaskButton_OnClick" Content="移除任务" />
                                 </StackPanel>
@@ -75,6 +72,7 @@
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <Grid Margin="12">
                                     <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
@@ -154,14 +152,29 @@
                                                Text="{Binding SelectedTaskSourceLockHint}"
                                                TextWrapping="Wrap" />
 
-                                    <TextBlock Grid.Row="4" Margin="0,0,0,12" VerticalAlignment="Center" Text="高级策略" />
+                                    <TextBlock Grid.Row="4" Margin="0,0,0,12" VerticalAlignment="Center" Text="管理模式" />
                                     <ComboBox Grid.Row="4"
                                               Grid.Column="1"
                                               Margin="0,0,0,12"
+                                              ItemsSource="{Binding TaskModeOptions}"
+                                              SelectedItem="{Binding SelectedTask.Mode}" />
+
+                                    <TextBlock Grid.Row="5"
+                                               Grid.Column="1"
+                                               Margin="0,0,0,12"
+                                               Foreground="#5F6B7A"
+                                               Text="{Binding SelectedTaskModeHint}"
+                                               TextWrapping="Wrap" />
+
+                                    <TextBlock Grid.Row="6" Margin="0,0,0,12" VerticalAlignment="Center" Text="高级策略" />
+                                    <ComboBox Grid.Row="6"
+                                              Grid.Column="1"
+                                              Margin="0,0,0,12"
+                                              IsEnabled="{Binding CanEditSelectedTaskStrategy}"
                                               ItemsSource="{Binding LinkStrategyOptions}"
                                               SelectedItem="{Binding SelectedTask.PreferredStrategy}" />
 
-                                    <GroupBox Grid.Row="5" Grid.ColumnSpan="2" Margin="0,0,0,12" Header="快速添加目标">
+                                    <GroupBox Grid.Row="7" Grid.ColumnSpan="2" Margin="0,0,0,12" Header="快速添加目标">
                                         <Grid Margin="12">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
@@ -202,30 +215,29 @@
                                         </Grid>
                                     </GroupBox>
 
-                                    <Grid Grid.Row="6" Grid.ColumnSpan="2" Margin="0,0,0,12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="110" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock VerticalAlignment="Center" Text="完整目标路径" />
-                                        <TextBox Grid.Column="1"
-                                                 Margin="0,0,8,0"
-                                                 Text="{Binding FullTargetPathInput, UpdateSourceTrigger=PropertyChanged}" />
-                                        <Button Grid.Column="2"
-                                                Padding="14,6"
-                                                Click="AddFullPathTargetButton_OnClick"
-                                                Content="按完整路径添加" />
-                                    </Grid>
-
-                                    <GroupBox Grid.Row="7" Grid.ColumnSpan="2" Header="目标表格">
+                                    <GroupBox Grid.Row="8" Grid.ColumnSpan="2" Header="目标表格">
                                         <DockPanel Margin="0,8,0,0">
-                                            <StackPanel DockPanel.Dock="Top"
-                                                        Margin="0,0,0,8"
-                                                        Orientation="Horizontal">
+                                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8" Orientation="Horizontal">
                                                 <Button Margin="0,0,8,0" Padding="14,6" Click="RefreshPreviewButton_OnClick" Content="刷新预检查" />
                                                 <Button Padding="14,6" Click="RemoveSelectedTargetButton_OnClick" Content="移除选中目标" />
+                                            </StackPanel>
+
+                                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="110" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock VerticalAlignment="Center" Text="完整目标路径" />
+                                                    <TextBox Grid.Column="1"
+                                                             Margin="0,0,8,0"
+                                                             Text="{Binding FullTargetPathInput, UpdateSourceTrigger=PropertyChanged}" />
+                                                    <Button Grid.Column="2"
+                                                            Padding="14,6"
+                                                            Click="AddFullPathTargetButton_OnClick"
+                                                            Content="按完整路径添加" />
+                                                </Grid>
                                             </StackPanel>
 
                                             <DataGrid x:Name="TargetsDataGrid"
@@ -258,13 +270,13 @@
                                 CornerRadius="6">
                             <DockPanel>
                                 <StackPanel>
-                                    <TextBlock Foreground="#4C5B6F" Text="编辑期预检查会在目标行内展示冲突和格式问题；完整校验会检查源是否存在、目标是否冲突以及路径是否完整。" />
+                                    <TextBlock Foreground="#4C5B6F" Text="编辑期预检查会在目标行中展示冲突与格式问题；完整校验会检查源是否存在、目标是否冲突以及路径是否完整。" />
                                     <TextBlock Margin="0,8,0,0" FontWeight="SemiBold" Text="{Binding ValidationSummary}" />
                                     <TextBlock Margin="0,4,0,0" FontWeight="SemiBold" Text="{Binding ExecutionSummary}" />
                                 </StackPanel>
 
                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Button Margin="0,0,8,0" Padding="16,8" Click="DowngradePreviewButton_OnClick" Content="查看降级确认结构" />
+                                    <Button Margin="0,0,8,0" Padding="16,8" Click="DowngradePreviewButton_OnClick" Content="查看降级确认" />
                                     <Button Margin="0,0,8,0" Padding="16,8" Click="ValidateAllButton_OnClick" Content="先校验全部" />
                                     <Button Padding="16,8" Click="ExecuteAllButton_OnClick" Content="批量执行" />
                                 </StackPanel>
@@ -273,7 +285,7 @@
                     </Grid>
                 </TabItem>
 
-                <TabItem x:Name="ManagedLinksTabItem" Header="已链接">
+                <TabItem x:Name="ManagedLinksTabItem" Header="已连接">
                     <Grid Margin="0,12,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -285,7 +297,7 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <UniformGrid Grid.ColumnSpan="3" Margin="0,0,0,16" Columns="5">
+                        <UniformGrid Grid.ColumnSpan="3" Margin="0,0,0,16" Columns="7">
                             <Border Margin="0,0,8,0" Padding="12" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
                                 <StackPanel>
                                     <TextBlock Foreground="#5F6B7A" Text="源任务" />
@@ -302,6 +314,18 @@
                                 <StackPanel>
                                     <TextBlock Foreground="#5F6B7A" Text="生效中" />
                                     <TextBlock FontSize="24" FontWeight="SemiBold" Text="{Binding ManagedSummary.Active}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Margin="0,0,8,0" Padding="12" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
+                                <StackPanel>
+                                    <TextBlock Foreground="#5F6B7A" Text="待同步" />
+                                    <TextBlock FontSize="24" FontWeight="SemiBold" Text="{Binding ManagedSummary.PendingSync}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Margin="0,0,8,0" Padding="12" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
+                                <StackPanel>
+                                    <TextBlock Foreground="#5F6B7A" Text="需确认" />
+                                    <TextBlock FontSize="24" FontWeight="SemiBold" Text="{Binding ManagedSummary.Warning}" />
                                 </StackPanel>
                             </Border>
                             <Border Margin="0,0,8,0" Padding="12" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
@@ -334,74 +358,78 @@
 
                         <GroupBox Grid.Row="1" Grid.Column="2" Header="详情">
                             <Grid Margin="12">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="110" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                                    <TextBlock Margin="0,0,0,12" Text="源名称" />
-                                    <TextBlock Grid.Column="1" Margin="0,0,0,12" FontWeight="SemiBold" Text="{Binding SelectedManagedLink.DisplayName}" />
+                                <TextBlock Margin="0,0,0,12" Text="源名称" />
+                                <TextBlock Grid.Column="1" Margin="0,0,0,12" FontWeight="SemiBold" Text="{Binding SelectedManagedLink.DisplayName}" />
 
-                                    <TextBlock Grid.Row="1" Margin="0,0,0,12" Text="源路径" />
-                                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,0,0,12" Text="{Binding SelectedManagedLink.SourcePath}" TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="1" Margin="0,0,0,12" Text="源路径" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,0,0,12" Text="{Binding SelectedManagedLink.SourcePath}" TextWrapping="Wrap" />
 
-                                    <TextBlock Grid.Row="2" Margin="0,0,0,12" Text="源类型" />
-                                    <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,0,0,12" Text="{Binding SelectedManagedLink.SourceKind}" />
+                                <TextBlock Grid.Row="2" Margin="0,0,0,12" Text="源类型" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,0,0,12" Text="{Binding SelectedManagedLink.SourceKind}" />
 
-                                    <GroupBox Grid.Row="3" Grid.ColumnSpan="2" Header="目标项">
-                                        <DockPanel Margin="0,8,0,0">
-                                            <StackPanel DockPanel.Dock="Top"
-                                                        Margin="0,0,0,8"
-                                                        Orientation="Horizontal">
-                                                <Button Margin="0,0,8,0" Padding="14,6" Click="RebuildManagedTargetButton_OnClick" Content="重建链接" />
-                                                <Button Margin="0,0,8,0" Padding="14,6" Click="DeleteManagedTargetButton_OnClick" Content="删除链接" />
-                                                <Button Padding="14,6" Click="RemoveManagedTargetRecordButton_OnClick" Content="移除记录" />
-                                            </StackPanel>
+                                <TextBlock Grid.Row="3" Margin="0,0,0,12" Text="管理模式" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,0,0,12" Text="{Binding SelectedManagedLinkModeDisplay}" />
 
-                                            <DataGrid AutoGenerateColumns="False"
-                                                      CanUserAddRows="False"
-                                                      HeadersVisibility="Column"
-                                                      ItemsSource="{Binding SelectedManagedLink.Targets}"
-                                                      RowDetailsVisibilityMode="VisibleWhenSelected"
-                                                      SelectedItem="{Binding SelectedManagedTarget}">
-                                                <DataGrid.Columns>
-                                                    <DataGridTextColumn Width="140" Binding="{Binding DisplayName}" Header="目标" />
-                                                    <DataGridTextColumn Width="*" Binding="{Binding TargetPath}" Header="路径" />
-                                                    <DataGridTextColumn Width="100" Binding="{Binding StateDisplayName}" Header="状态" />
-                                                    <DataGridTemplateColumn Width="140" Header="原因">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Expander Header="查看详情">
-                                                                    <TextBlock Width="260"
-                                                                               Margin="0,8,0,0"
-                                                                               Text="{Binding StatusReason}"
-                                                                               TextWrapping="Wrap" />
-                                                                </Expander>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                                <DataGrid.RowDetailsTemplate>
-                                                    <DataTemplate>
-                                                        <Border Margin="8" Padding="10" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
-                                                            <StackPanel>
-                                                                <TextBlock FontWeight="SemiBold" Text="{Binding StatusReason}" TextWrapping="Wrap" />
-                                                                <TextBlock Margin="0,8,0,0" Foreground="#5F6B7A" Text="{Binding AppliedStrategy, StringFormat=最近策略：{0}}" />
-                                                                <TextBlock Foreground="#5F6B7A" Text="{Binding LastCheckedAt, StringFormat=最近检查：{0:G}}" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </DataGrid.RowDetailsTemplate>
-                                            </DataGrid>
-                                        </DockPanel>
-                                    </GroupBox>
-                                </Grid>
+                                <GroupBox Grid.Row="4" Grid.ColumnSpan="2" Header="目标项">
+                                    <DockPanel Margin="0,8,0,0">
+                                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8" Orientation="Horizontal">
+                                            <Button Margin="0,0,8,0" Padding="14,6" Click="SyncManagedMirrorButton_OnClick" Content="同步到所有目标" IsEnabled="{Binding CanSyncSelectedManagedMirror}" />
+                                            <Button Margin="0,0,8,0" Padding="14,6" Click="RebuildManagedTargetButton_OnClick" Content="重建目标" />
+                                            <Button Margin="0,0,8,0" Padding="14,6" Click="DeleteManagedTargetButton_OnClick" Content="删除目标" />
+                                            <Button Padding="14,6" Click="RemoveManagedTargetRecordButton_OnClick" Content="移除记录" />
+                                        </StackPanel>
+
+                                        <DataGrid AutoGenerateColumns="False"
+                                                  CanUserAddRows="False"
+                                                  HeadersVisibility="Column"
+                                                  ItemsSource="{Binding SelectedManagedLink.Targets}"
+                                                  RowDetailsVisibilityMode="VisibleWhenSelected"
+                                                  SelectedItem="{Binding SelectedManagedTarget}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Width="140" Binding="{Binding DisplayName}" Header="目标" />
+                                                <DataGridTextColumn Width="*" Binding="{Binding TargetPath}" Header="路径" />
+                                                <DataGridTextColumn Width="100" Binding="{Binding StateDisplayName}" Header="状态" />
+                                                <DataGridTemplateColumn Width="140" Header="原因">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Expander Header="查看详情">
+                                                                <TextBlock Width="260"
+                                                                           Margin="0,8,0,0"
+                                                                           Text="{Binding StatusReason}"
+                                                                           TextWrapping="Wrap" />
+                                                            </Expander>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                            </DataGrid.Columns>
+                                            <DataGrid.RowDetailsTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="8" Padding="10" Background="#F5F7FA" BorderBrush="#D6DCE5" BorderThickness="1" CornerRadius="6">
+                                                        <StackPanel>
+                                                            <TextBlock FontWeight="SemiBold" Text="{Binding StatusReason}" TextWrapping="Wrap" />
+                                                            <TextBlock Margin="0,8,0,0" Foreground="#5F6B7A" Text="{Binding AppliedStrategy, StringFormat=最近策略：{0}}" />
+                                                            <TextBlock Foreground="#5F6B7A" Text="{Binding LastSynchronizedAt, StringFormat=最近同步：{0:G}}" />
+                                                            <TextBlock Foreground="#5F6B7A" Text="{Binding LastCheckedAt, StringFormat=最近检查：{0:G}}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </DataGrid.RowDetailsTemplate>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </GroupBox>
+                            </Grid>
                         </GroupBox>
                     </Grid>
                 </TabItem>
@@ -464,7 +492,7 @@
                                         <DataGridTextColumn Width="140" Binding="{Binding DisplayName}" Header="目标" />
                                         <DataGridTextColumn Width="*" Binding="{Binding ExpandedTargetPath}" Header="真实目标路径" />
                                         <DataGridCheckBoxColumn Width="90" Binding="{Binding HasConflict}" Header="已冲突" />
-                                        <DataGridCheckBoxColumn Width="120" Binding="{Binding ParentDirectoryMissing}" Header="缺失父目录" />
+                                        <DataGridCheckBoxColumn Width="120" Binding="{Binding ParentDirectoryMissing}" Header="缺少父目录" />
                                     </DataGrid.Columns>
                                 </DataGrid>
 

@@ -92,6 +92,63 @@ public sealed class ManagedLinkRegistryTests
     }
 
     [Fact]
+    public async Task RefreshAsync_should_mark_changed_mirror_source_as_pending_sync()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var snapshot = DirectoryMirrorService.CaptureSnapshot(sourcePath);
+            var record = CreateMirrorRecord(sourcePath, targetPath, snapshot);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ \"v\": 2 }");
+            var service = new LinkStatusService();
+
+            var refreshed = await service.RefreshAsync(record);
+
+            Assert.Equal(LinkTargetState.PendingSync, refreshed.Targets[0].State);
+            Assert.Contains("源目录变化", refreshed.Targets[0].StatusReason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RefreshAsync_should_mark_changed_mirror_target_as_warning_when_source_also_changed()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var snapshot = DirectoryMirrorService.CaptureSnapshot(sourcePath);
+            var record = CreateMirrorRecord(sourcePath, targetPath, snapshot);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ \"v\": 2 }");
+            File.WriteAllText(Path.Combine(targetPath, "local.txt"), "manual");
+            var service = new LinkStatusService();
+
+            var refreshed = await service.RefreshAsync(record);
+
+            Assert.Equal(LinkTargetState.Warning, refreshed.Targets[0].State);
+            Assert.Contains("本地改动", refreshed.Targets[0].StatusReason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DeleteAsync_should_delete_only_the_matching_link_target()
     {
         var tempRoot = CreateTemporaryDirectory();
@@ -112,6 +169,39 @@ public sealed class ManagedLinkRegistryTests
             Assert.Null(reason);
             Assert.True(File.Exists(sourcePath));
             Assert.False(File.Exists(targetPath));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteAsync_should_delete_directory_mirror_target()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var snapshot = DirectoryMirrorService.CaptureSnapshot(sourcePath);
+            var record = CreateMirrorRecord(sourcePath, targetPath, snapshot);
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [record],
+            });
+            var service = CreateExecutionService(tempRoot, new WindowsLinkBackendService());
+
+            var reason = await service.DeleteAsync(record, record.Targets[0]);
+
+            Assert.Null(reason);
+            Assert.True(Directory.Exists(sourcePath));
+            Assert.False(Directory.Exists(targetPath));
         }
         finally
         {
@@ -962,6 +1052,32 @@ public sealed class ManagedLinkRegistryTests
         };
     }
 
+    private static ManagedLinkRecord CreateMirrorRecord(
+        string sourcePath,
+        string targetPath,
+        IReadOnlyList<DirectorySnapshotEntry> snapshot)
+    {
+        return new ManagedLinkRecord
+        {
+            DisplayName = "skills 镜像",
+            SourcePath = sourcePath,
+            SourceKind = LinkSourceKind.Directory,
+            Mode = ManagedPathMode.DirectoryMirror,
+            LastSynchronizedSourceSnapshot = DirectoryMirrorService.CloneSnapshot(snapshot),
+            LastSynchronizedAt = DateTimeOffset.Now,
+            Targets =
+            [
+                new ManagedLinkTargetRecord
+                {
+                    DisplayName = Path.GetFileName(targetPath),
+                    TargetPath = targetPath,
+                    LastSynchronizedSnapshot = DirectoryMirrorService.CloneSnapshot(snapshot),
+                    LastSynchronizedAt = DateTimeOffset.Now,
+                },
+            ],
+        };
+    }
+
     private static LinkOperationService CreateExecutionService(string storageRoot, ILinkBackendService backend)
     {
         var pathService = new PathEnvironmentService();
@@ -1027,6 +1143,11 @@ public sealed class ManagedLinkRegistryTests
         }
 
         public Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade)
+        {
+            return Task.FromResult(new LinkExecutionBatchResult());
+        }
+
+        public Task<LinkExecutionBatchResult> SyncMirrorAsync(ManagedLinkRecord record, bool allowTargetOverwrite)
         {
             return Task.FromResult(new LinkExecutionBatchResult());
         }

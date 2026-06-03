@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using WinLink.App.Dialogs;
+using WinLink.App.Models;
 using WinLink.App.Services;
 using WinLink.App.ViewModels;
 
@@ -15,13 +16,19 @@ public partial class MainWindow : Window
     private readonly ShellViewModel viewModel;
 
     /// <summary>
-    /// 使用主窗口视图模型创建桌面壳层。
+    /// 使用主窗口视图模型创建界面壳层。
     /// </summary>
     public MainWindow(ShellViewModel viewModel)
     {
         this.viewModel = viewModel;
         InitializeComponent();
         DataContext = viewModel;
+    }
+
+    private async void Window_OnLoaded(object sender, RoutedEventArgs e)
+    {
+        await viewModel.RefreshManagedLinksAsync(autoTriggered: true);
+        await PromptMirrorSyncIfNeededAsync();
     }
 
     private void ExitMenuItem_OnClick(object sender, RoutedEventArgs e)
@@ -32,6 +39,7 @@ public partial class MainWindow : Window
     private async void RefreshManagedLinksMenuItem_OnClick(object sender, RoutedEventArgs e)
     {
         await viewModel.RefreshManagedLinksAsync();
+        await PromptMirrorSyncIfNeededAsync();
     }
 
     private void ExecutionHistoryMenuItem_OnClick(object sender, RoutedEventArgs e)
@@ -210,7 +218,7 @@ public partial class MainWindow : Window
         var issues = await viewModel.ValidateAllPendingTasksAsync();
         if (issues.Count == 0)
         {
-            MessageBox.Show(this, "完整校验通过，可以继续进入后续执行流程。", "WinLink", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "完整校验通过，可以继续进入执行流程。", "WinLink", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -277,6 +285,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(MainTabControl.SelectedItem, ManagedLinksTabItem))
         {
             await viewModel.RefreshManagedLinksAsync(autoTriggered: true);
+            await PromptMirrorSyncIfNeededAsync();
         }
     }
 
@@ -295,7 +304,7 @@ public partial class MainWindow : Window
         var reason = await viewModel.DeleteManagedTargetAsync(viewModel.SelectedManagedTarget);
         if (!string.IsNullOrWhiteSpace(reason))
         {
-            MessageBox.Show(this, reason, "已阻止删除链接", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, reason, "已阻止删除目标", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -304,12 +313,105 @@ public partial class MainWindow : Window
         var reason = await viewModel.RebuildManagedTargetAsync(viewModel.SelectedManagedTarget);
         if (!string.IsNullOrWhiteSpace(reason))
         {
-            MessageBox.Show(this, reason, "重建链接失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, reason, "重建目标失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private async void SyncManagedMirrorButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!viewModel.CanSyncSelectedManagedMirror)
+        {
+            return;
+        }
+
+        await SyncCurrentMirrorRecordAsync();
     }
 
     private async void RemoveManagedTargetRecordButton_OnClick(object sender, RoutedEventArgs e)
     {
         await viewModel.RemoveManagedTargetRecordAsync(viewModel.SelectedManagedTarget);
+    }
+
+    private async Task PromptMirrorSyncIfNeededAsync()
+    {
+        var recordIds = viewModel.GetMirrorRecordsNeedingSync()
+            .Select(record => record.Id)
+            .ToList();
+        foreach (var recordId in recordIds)
+        {
+            var currentRecord = viewModel.ManagedLinks.FirstOrDefault(record => string.Equals(record.Id, recordId, StringComparison.Ordinal));
+            if (currentRecord is null)
+            {
+                continue;
+            }
+
+            viewModel.SelectedManagedLink = currentRecord;
+            var result = MessageBox.Show(
+                this,
+                BuildMirrorPromptMessage(currentRecord),
+                "检测到目录镜像变更",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes)
+            {
+                continue;
+            }
+
+            await SyncCurrentMirrorRecordAsync();
+        }
+    }
+
+    private async Task SyncCurrentMirrorRecordAsync()
+    {
+        var selectedRecord = viewModel.SelectedManagedLink;
+        if (selectedRecord is null || selectedRecord.Mode != ManagedPathMode.DirectoryMirror)
+        {
+            return;
+        }
+
+        var allowOverwrite = true;
+        if (selectedRecord.Targets.Any(target => target.State == LinkTargetState.Warning))
+        {
+            var overwriteConfirmation = MessageBox.Show(
+                this,
+                "部分目标目录存在本地改动。继续同步会覆盖这些改动，并清理目标中源目录不存在的额外内容。是否继续？",
+                "确认覆盖目标改动",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (overwriteConfirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            var result = await viewModel.SyncSelectedManagedMirrorAsync(allowOverwrite);
+            if (result is null)
+            {
+                return;
+            }
+
+            MessageBox.Show(
+                this,
+                ExecutionResultMessageFormatter.Format(result.HistoryEntry),
+                "目录镜像同步完成",
+                MessageBoxButton.OK,
+                result.HistoryEntry.FailedCount > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, "目录镜像同步失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static string BuildMirrorPromptMessage(ManagedLinkRecord record)
+    {
+        if (record.Targets.Any(target => target.State == LinkTargetState.Warning))
+        {
+            return $"检测到源目录“{record.DisplayName}”发生变化，且部分目标存在本地改动。是否现在同步到所有目标目录？";
+        }
+
+        return $"检测到源目录“{record.DisplayName}”发生变化。是否现在同步到所有目标目录？";
     }
 }

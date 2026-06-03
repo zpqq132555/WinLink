@@ -6,7 +6,7 @@ using System.Runtime.CompilerServices;
 namespace WinLink.App.Models;
 
 /// <summary>
-/// 标识当前任务或记录的源对象类型。
+/// 标识当前任务或受管记录的源对象类型。
 /// </summary>
 public enum LinkSourceKind
 {
@@ -16,7 +16,7 @@ public enum LinkSourceKind
 }
 
 /// <summary>
-/// 表示目标链接在检查后的健康状态。
+/// 表示受管目标在检查后的状态。
 /// </summary>
 public enum LinkTargetState
 {
@@ -24,6 +24,8 @@ public enum LinkTargetState
     Active = 1,
     Invalid = 2,
     Disconnected = 3,
+    PendingSync = 4,
+    Warning = 5,
 }
 
 /// <summary>
@@ -35,6 +37,15 @@ public enum LinkCreationStrategy
     SymbolicLink = 1,
     Junction = 2,
     HardLink = 3,
+}
+
+/// <summary>
+/// 表示当前任务或受管记录采用的管理模式。
+/// </summary>
+public enum ManagedPathMode
+{
+    Link = 0,
+    DirectoryMirror = 1,
 }
 
 /// <summary>
@@ -52,9 +63,9 @@ public enum LinkTargetInputMode
 public sealed class ManagedLinkRegistryDocument
 {
     /// <summary>
-    /// 当前应用使用的注册表 JSON 版本号。
+    /// 当前受管注册表 JSON 版本号。
     /// </summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>
     /// 当前文档的结构版本。
@@ -92,17 +103,25 @@ public sealed class ManagedLinkRecord
     /// </summary>
     public LinkSourceKind SourceKind { get; set; }
 
-    /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。
-    /// </summary>
-
     /// <summary>
-    /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。
+    /// 当前受管记录采用的管理模式。
     /// </summary>
+    public ManagedPathMode Mode { get; set; } = ManagedPathMode.Link;
 
     /// <summary>
     /// 首选链接策略。
     /// </summary>
     public LinkCreationStrategy PreferredStrategy { get; set; } = LinkCreationStrategy.Auto;
+
+    /// <summary>
+    /// 目录镜像模式下，上一次成功同步时的源快照基线。
+    /// </summary>
+    public List<DirectorySnapshotEntry> LastSynchronizedSourceSnapshot { get; set; } = [];
+
+    /// <summary>
+    /// 目录镜像模式下，最近一次成功同步时间。
+    /// </summary>
+    public DateTimeOffset? LastSynchronizedAt { get; set; }
 
     /// <summary>
     /// 创建时间。
@@ -120,7 +139,7 @@ public sealed class ManagedLinkRecord
     public List<ManagedLinkTargetRecord> Targets { get; set; } = [];
 
     /// <summary>
-    /// 记录当前是否在 UI 中展开详情区，用于恢复上次查看状态。
+    /// 记录当前是否在 UI 中展开详情区域。
     /// </summary>
     public bool IsExpanded { get; set; }
 
@@ -128,7 +147,33 @@ public sealed class ManagedLinkRecord
     /// 用于左侧列表展示的目标状态摘要。
     /// </summary>
     public string StatusSummary =>
-        $"目标 {Targets.Count} / 生效 {Targets.Count(target => target.State == LinkTargetState.Active)} / 失效 {Targets.Count(target => target.State == LinkTargetState.Invalid)} / 已断开 {Targets.Count(target => target.State == LinkTargetState.Disconnected)}";
+        $"目标 {Targets.Count} / 生效 {Targets.Count(target => target.State == LinkTargetState.Active)} / 待同步 {Targets.Count(target => target.State == LinkTargetState.PendingSync)} / 警告 {Targets.Count(target => target.State == LinkTargetState.Warning)} / 失效 {Targets.Count(target => target.State == LinkTargetState.Invalid)} / 已断开 {Targets.Count(target => target.State == LinkTargetState.Disconnected)}";
+}
+
+/// <summary>
+/// 表示目录镜像模式下用于比较的快照条目。
+/// </summary>
+public sealed class DirectorySnapshotEntry
+{
+    /// <summary>
+    /// 相对于镜像根目录的路径。
+    /// </summary>
+    public string RelativePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 当前条目是否为目录。
+    /// </summary>
+    public bool IsDirectory { get; set; }
+
+    /// <summary>
+    /// 文件条目的大小；目录条目固定为 0。
+    /// </summary>
+    public long Length { get; set; }
+
+    /// <summary>
+    /// 文件条目的最后写入时间 UTC ticks；目录条目固定为 0。
+    /// </summary>
+    public long LastWriteTimeUtcTicks { get; set; }
 }
 
 /// <summary>
@@ -167,16 +212,28 @@ public sealed class ManagedLinkTargetRecord
     public LinkCreationStrategy AppliedStrategy { get; set; } = LinkCreationStrategy.Auto;
 
     /// <summary>
+    /// 目录镜像模式下，该目标上一次成功同步后的目录快照基线。
+    /// </summary>
+    public List<DirectorySnapshotEntry> LastSynchronizedSnapshot { get; set; } = [];
+
+    /// <summary>
+    /// 目录镜像模式下，该目标最近一次成功同步时间。
+    /// </summary>
+    public DateTimeOffset? LastSynchronizedAt { get; set; }
+
+    /// <summary>
     /// 最近一次状态检查时间。
     /// </summary>
     public DateTimeOffset? LastCheckedAt { get; set; }
 
     /// <summary>
-    /// 将底层状态映射成用户可读的主文本。
+    /// 将底层状态映射成用户可读的主文本文案。
     /// </summary>
     public string StateDisplayName => State switch
     {
         LinkTargetState.Active => "生效中",
+        LinkTargetState.PendingSync => "待同步",
+        LinkTargetState.Warning => "需确认",
         LinkTargetState.Invalid => "失效",
         LinkTargetState.Disconnected => "已断开",
         _ => "未检查",
@@ -282,6 +339,7 @@ public sealed class WorkspaceUiStateDocument
 public sealed class LinkTaskDraft : INotifyPropertyChanged
 {
     private string displayName = string.Empty;
+    private ManagedPathMode mode = ManagedPathMode.Link;
     private LinkCreationStrategy preferredStrategy = LinkCreationStrategy.Auto;
     private string? reusedManagedSourceRecordId;
     private LinkSourceKind sourceKind;
@@ -318,10 +376,18 @@ public sealed class LinkTaskDraft : INotifyPropertyChanged
         get => sourceKind;
         set
         {
-            if (SetProperty(ref sourceKind, value))
+            if (!SetProperty(ref sourceKind, value))
             {
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSourceLocked)));
+                return;
             }
+
+            if (sourceKind != LinkSourceKind.Directory)
+            {
+                Mode = ManagedPathMode.Link;
+            }
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSourceLocked)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanUseDirectoryMirror)));
         }
     }
 
@@ -331,7 +397,21 @@ public sealed class LinkTaskDraft : INotifyPropertyChanged
     public bool IsSourceLocked => SourceKind != LinkSourceKind.Unknown;
 
     /// <summary>
-    /// 当前任务的手动高级策略选择；`Auto` 表示按系统推荐并在必要时提示降级。
+    /// 当前任务是否允许切换到目录镜像模式。
+    /// </summary>
+    public bool CanUseDirectoryMirror => SourceKind == LinkSourceKind.Directory;
+
+    /// <summary>
+    /// 当前任务采用的管理模式。
+    /// </summary>
+    public ManagedPathMode Mode
+    {
+        get => mode;
+        set => SetProperty(ref mode, value == ManagedPathMode.DirectoryMirror && !CanUseDirectoryMirror ? ManagedPathMode.Link : value);
+    }
+
+    /// <summary>
+    /// 当前任务的手动高级策略选择，`Auto` 表示按系统推荐并在必要时提示降级。
     /// </summary>
     public LinkCreationStrategy PreferredStrategy
     {
@@ -420,6 +500,11 @@ public sealed class PlannedLinkTarget
     /// 源类型。
     /// </summary>
     public LinkSourceKind SourceKind { get; set; }
+
+    /// <summary>
+    /// 当前计划采用的管理模式。
+    /// </summary>
+    public ManagedPathMode Mode { get; set; }
 
     /// <summary>
     /// 如果当前任务复用了已连接源，则记录其原始受管记录标识。

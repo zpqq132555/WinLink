@@ -259,6 +259,101 @@ public sealed class LinkExecutionServiceTests
         }
     }
 
+    [Fact]
+    public async Task ExecuteAsync_should_create_directory_mirror_and_persist_snapshots()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+
+            var plan = await service.PlanExecutionAsync([task]);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var registry = await storage.LoadRegistryAsync();
+
+            Assert.Empty(plan.Downgrades);
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+            Assert.True(File.Exists(Path.Combine(targetPath, "config.json")));
+
+            var record = Assert.Single(registry.Records);
+            Assert.Equal(ManagedPathMode.DirectoryMirror, record.Mode);
+            Assert.NotEmpty(record.LastSynchronizedSourceSnapshot);
+            Assert.NotNull(record.LastSynchronizedAt);
+            Assert.NotEmpty(record.Targets[0].LastSynchronizedSnapshot);
+            Assert.NotNull(record.Targets[0].LastSynchronizedAt);
+            Assert.Equal(LinkCreationStrategy.Auto, record.Targets[0].AppliedStrategy);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SyncMirrorAsync_should_overwrite_removed_and_added_entries_using_true_mirror_semantics()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            Directory.CreateDirectory(sourcePath);
+            var oldFilePath = Path.Combine(sourcePath, "old.txt");
+            File.WriteAllText(oldFilePath, "old");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+            var plan = await service.PlanExecutionAsync([task]);
+            await service.ExecuteAsync(plan, allowDowngrade: true);
+
+            File.Delete(oldFilePath);
+            File.WriteAllText(Path.Combine(sourcePath, "new.txt"), "new");
+
+            var record = (await storage.LoadRegistryAsync()).Records.Single();
+            var result = await service.SyncMirrorAsync(record, allowTargetOverwrite: false);
+            var refreshedRecord = (await storage.LoadRegistryAsync()).Records.Single();
+
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+            Assert.False(File.Exists(Path.Combine(targetPath, "old.txt")));
+            Assert.True(File.Exists(Path.Combine(targetPath, "new.txt")));
+            Assert.Equal("new", File.ReadAllText(Path.Combine(targetPath, "new.txt")));
+            Assert.NotNull(refreshedRecord.LastSynchronizedAt);
+            Assert.NotEmpty(refreshedRecord.Targets[0].LastSynchronizedSnapshot);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static LinkOperationService CreateExecutionService(string storageRoot, FakeLinkBackendService backend)
     {
         var pathService = new PathEnvironmentService();

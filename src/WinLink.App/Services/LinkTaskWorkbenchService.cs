@@ -18,14 +18,17 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
         this.pathEnvironmentService = pathEnvironmentService;
     }
 
-    /// <summary>
-    /// 根据源路径更新任务，并自动锁定其源类型。
-    /// </summary>
+    /// <inheritdoc />
     public void ApplySource(LinkTaskDraft task, string sourcePath)
     {
         var expandedPath = pathEnvironmentService.Expand(sourcePath.Trim());
         task.SourcePath = expandedPath;
         task.SourceKind = pathEnvironmentService.DetectSourceKind(expandedPath);
+
+        if (task.SourceKind != LinkSourceKind.Directory)
+        {
+            task.Mode = ManagedPathMode.Link;
+        }
 
         if (string.IsNullOrWhiteSpace(task.DisplayName))
         {
@@ -35,9 +38,7 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
         RunLightValidation(task);
     }
 
-    /// <summary>
-    /// 按“目录 + 名称”模式向任务添加目标，并自动套用源名称。
-    /// </summary>
+    /// <inheritdoc />
     public LinkTargetDraft AddTargetFromDirectory(LinkTaskDraft task, string directoryPath, string? targetName = null)
     {
         var expandedDirectory = pathEnvironmentService.Expand(directoryPath.Trim());
@@ -50,9 +51,7 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
         return target;
     }
 
-    /// <summary>
-    /// 按完整路径模式向任务添加目标。
-    /// </summary>
+    /// <inheritdoc />
     public LinkTargetDraft AddTargetFromFullPath(LinkTaskDraft task, string fullPath)
     {
         var expandedPath = pathEnvironmentService.Expand(fullPath.Trim());
@@ -63,18 +62,14 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
         return target;
     }
 
-    /// <summary>
-    /// 从任务中移除目标，并重新计算剩余目标的轻量预检查结果。
-    /// </summary>
+    /// <inheritdoc />
     public void RemoveTarget(LinkTaskDraft task, LinkTargetDraft target)
     {
         task.Targets.Remove(target);
         RunLightValidation(task);
     }
 
-    /// <summary>
-    /// 对单个任务执行编辑期轻量预检查，并把冲突或格式问题写回目标行。
-    /// </summary>
+    /// <inheritdoc />
     public void RunLightValidation(LinkTaskDraft task)
     {
         foreach (var target in task.Targets)
@@ -99,6 +94,11 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
         if (string.IsNullOrWhiteSpace(task.SourcePath))
         {
             return "请先选择源路径。";
+        }
+
+        if (task.Mode == ManagedPathMode.DirectoryMirror && task.SourceKind != LinkSourceKind.Directory)
+        {
+            return "只有目录源才能使用镜像模式。";
         }
 
         if (string.IsNullOrWhiteSpace(target.TargetPath))

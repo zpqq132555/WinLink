@@ -86,7 +86,7 @@ public sealed class UnitTest1
             var json = await File.ReadAllTextAsync(directories.RegistryFilePath);
             var restored = await service.LoadRegistryAsync();
 
-            Assert.Contains("\"schemaVersion\": 1", json);
+            Assert.Contains($"\"schemaVersion\": {ManagedLinkRegistryDocument.CurrentSchemaVersion}", json);
             Assert.Single(restored.Records);
             Assert.Equal("AGENTS sync", restored.Records[0].DisplayName);
             Assert.Equal("Desktop config", restored.Records[0].Targets[0].DisplayName);
