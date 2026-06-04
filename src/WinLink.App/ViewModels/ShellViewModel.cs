@@ -207,7 +207,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         ResetTargetInputHints();
         workbenchService.RunLightValidation(SelectedTask);
         RefreshSelectedTaskReusableManagedSourceState();
-        ShowStatus($"已复用已连接源：{option.DisplayName}");
+        ShowStatus($"已复用已链接源：{option.DisplayName}");
     }
 
     /// <summary>
@@ -248,7 +248,7 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// 复用已连接源时展示给用户的提示文案。
     /// </summary>
     public string SelectedTaskSourceLockHint => IsSelectedTaskReusingManagedSource
-        ? "当前任务复用了已连接源，源路径和源类型已锁定；你可以继续新增目标。"
+        ? "当前任务复用了已链接源，源路径和源类型已锁定；你可以继续新增目标。"
         : string.Empty;
 
     /// <summary>
@@ -511,9 +511,9 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// <summary>
     /// 直接应用当前预设，并复用标准执行、注册表和历史记录管道。
     /// </summary>
-    public async Task<LinkExecutionBatchResult> ApplySelectedPresetAsync(LinkExecutionPlan plan, bool allowDowngrade)
+    public async Task<LinkExecutionBatchResult> ApplySelectedPresetAsync(LinkExecutionPlan plan, bool allowDowngrade, bool allowMirrorAdoption)
     {
-        var result = await linkOperationService.ExecuteAsync(plan, allowDowngrade);
+        var result = await linkOperationService.ExecuteAsync(plan, allowDowngrade, allowMirrorAdoption);
         ExecutionSummary = $"本次执行：成功 {result.HistoryEntry.SuccessCount}，跳过 {result.HistoryEntry.SkippedCount}，失败 {result.HistoryEntry.FailedCount}";
         LoadManagedLinksFromStorage();
         LoadExecutionHistoryFromStorage();
@@ -624,9 +624,9 @@ public sealed class ShellViewModel : INotifyPropertyChanged
     /// <summary>
     /// 执行当前批次任务，并在完成后刷新注册表与历史视图。
     /// </summary>
-    public async Task<LinkExecutionBatchResult> ExecutePendingTasksAsync(LinkExecutionPlan plan, bool allowDowngrade)
+    public async Task<LinkExecutionBatchResult> ExecutePendingTasksAsync(LinkExecutionPlan plan, bool allowDowngrade, bool allowMirrorAdoption)
     {
-        var result = await linkOperationService.ExecuteAsync(plan, allowDowngrade);
+        var result = await linkOperationService.ExecuteAsync(plan, allowDowngrade, allowMirrorAdoption);
         ExecutionSummary = $"本次执行：成功 {result.HistoryEntry.SuccessCount}，跳过 {result.HistoryEntry.SkippedCount}，失败 {result.HistoryEntry.FailedCount}";
         ShowStatus(ExecutionSummary);
 
@@ -770,8 +770,13 @@ public sealed class ShellViewModel : INotifyPropertyChanged
         }
 
         var recordContext = CreateManagedRecordContext(SelectedManagedLink, target);
+        var selectedRecordId = recordContext.Id;
+        var remainingTargetId = SelectedManagedLink.Targets
+            .Where(item => !string.Equals(item.Id, target.Id, StringComparison.Ordinal))
+            .Select(item => item.Id)
+            .FirstOrDefault();
         await linkOperationService.RemoveRecordAsync(recordContext, target);
-        LoadManagedLinksFromStorage();
+        LoadManagedLinksFromStorage(selectedRecordId, remainingTargetId);
         ShowStatus($"已移除记录：{target.DisplayName}");
     }
 

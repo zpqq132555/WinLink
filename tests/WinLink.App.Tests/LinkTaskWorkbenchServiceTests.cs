@@ -136,6 +136,37 @@ public sealed class LinkTaskWorkbenchServiceTests
     }
 
     [Fact]
+    public void RunLightValidation_should_mark_existing_matching_directory_mirror_as_adoptable()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var service = new LinkTaskWorkbenchService(new PathEnvironmentService());
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+            };
+            service.ApplySource(task, sourcePath);
+            task.Mode = ManagedPathMode.DirectoryMirror;
+            var target = service.AddTargetFromFullPath(task, targetPath);
+
+            service.RunLightValidation(task);
+
+            Assert.Equal("目标目录已存在且与源一致，执行时可登记为受管镜像。", target.ValidationMessage);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void RemoveTarget_should_delete_selected_target_from_task()
     {
         var tempRoot = CreateTemporaryDirectory();
@@ -189,6 +220,46 @@ public sealed class LinkTaskWorkbenchServiceTests
 
             Assert.Contains(issues, issue => issue.Contains("源不存在", StringComparison.Ordinal));
             Assert.Contains(issues, issue => issue.Contains("目标已存在", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ValidateAsync_should_not_block_adoptable_directory_mirror_targets()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var pathService = new PathEnvironmentService();
+            var service = new LinkOperationService(
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                new JsonRegistryStorageService(new AppDirectories(tempRoot)),
+                new FakeLinkBackendService());
+
+            var issues = await service.ValidateAsync([task]);
+
+            Assert.Empty(issues);
         }
         finally
         {

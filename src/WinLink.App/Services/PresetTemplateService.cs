@@ -25,10 +25,13 @@ public sealed class PresetTemplateService
     /// </summary>
     public PresetTemplatePreview BuildPreview(PresetTemplateDefinition preset)
     {
+        var expandedSourcePath = ExpandTemplatePath(preset.SourcePathTemplate);
+        var sourceKind = pathEnvironmentService.DetectSourceKind(expandedSourcePath);
+
         return new PresetTemplatePreview
         {
             Name = preset.Name,
-            ExpandedSourcePath = ExpandTemplatePath(preset.SourcePathTemplate),
+            ExpandedSourcePath = expandedSourcePath,
             Targets = preset.Targets.Select(target =>
             {
                 var expandedTargetPath = ExpandTemplatePath(target.TargetPathTemplate);
@@ -38,7 +41,7 @@ public sealed class PresetTemplateService
                 {
                     DisplayName = target.DisplayName,
                     ExpandedTargetPath = expandedTargetPath,
-                    HasConflict = File.Exists(expandedTargetPath) || Directory.Exists(expandedTargetPath),
+                    PreviewState = ResolvePreviewState(sourceKind, expandedSourcePath, expandedTargetPath),
                     ParentDirectoryMissing = !string.IsNullOrWhiteSpace(parentDirectory) && !Directory.Exists(parentDirectory),
                 };
             }).ToList(),
@@ -76,5 +79,30 @@ public sealed class PresetTemplateService
     {
         var workspaceExpanded = pathTemplate.Replace("%WORKSPACE%", workspaceRoot, StringComparison.OrdinalIgnoreCase);
         return pathEnvironmentService.Expand(workspaceExpanded);
+    }
+
+    private static PresetTargetPreviewState ResolvePreviewState(
+        LinkSourceKind sourceKind,
+        string sourcePath,
+        string targetPath)
+    {
+        if (!File.Exists(targetPath) && !Directory.Exists(targetPath))
+        {
+            return PresetTargetPreviewState.Ready;
+        }
+
+        if (sourceKind == LinkSourceKind.Directory &&
+            Directory.Exists(sourcePath) &&
+            Directory.Exists(targetPath))
+        {
+            var sourceSnapshot = DirectoryMirrorService.CaptureSnapshot(sourcePath);
+            var targetSnapshot = DirectoryMirrorService.CaptureSnapshot(targetPath);
+            if (DirectoryMirrorService.SnapshotsEqual(sourceSnapshot, targetSnapshot))
+            {
+                return PresetTargetPreviewState.AdoptableMirror;
+            }
+        }
+
+        return PresetTargetPreviewState.Conflict;
     }
 }

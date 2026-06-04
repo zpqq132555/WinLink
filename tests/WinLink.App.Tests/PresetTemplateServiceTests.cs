@@ -81,6 +81,46 @@ public sealed class PresetTemplateServiceTests
     }
 
     [Fact]
+    public void BuildPreview_should_mark_adoptable_directory_mirror_targets()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            Environment.SetEnvironmentVariable("WINLINK_PRESET_HOME", tempRoot);
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "workspace", ".claude", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var preset = new PresetTemplateDefinition
+            {
+                Name = "skills 目录同步",
+                SourcePathTemplate = "%WINLINK_PRESET_HOME%\\skills",
+                Targets =
+                [
+                    new PresetTemplateTarget
+                    {
+                        DisplayName = "Claude skills",
+                        TargetPathTemplate = targetPath,
+                    },
+                ],
+            };
+
+            var service = new PresetTemplateService(new PathEnvironmentService(), tempRoot);
+
+            var preview = service.BuildPreview(preset);
+
+            Assert.Equal(PresetTargetPreviewState.AdoptableMirror, preview.Targets[0].PreviewState);
+            Assert.False(preview.Targets[0].HasConflict);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void InstantiateTask_should_convert_preset_into_editable_workbench_task()
     {
         var tempRoot = CreateTemporaryDirectory();

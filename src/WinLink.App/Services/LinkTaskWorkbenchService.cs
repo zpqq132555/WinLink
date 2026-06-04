@@ -111,6 +111,15 @@ public sealed class LinkTaskWorkbenchService : ILinkTaskWorkbenchService
             return "目标路径格式无效。";
         }
 
+        if (task.Mode == ManagedPathMode.DirectoryMirror && Directory.Exists(task.SourcePath) && Directory.Exists(target.TargetPath))
+        {
+            var sourceSnapshot = DirectoryMirrorService.CaptureSnapshot(task.SourcePath);
+            var targetSnapshot = DirectoryMirrorService.CaptureSnapshot(target.TargetPath);
+            return DirectoryMirrorService.SnapshotsEqual(sourceSnapshot, targetSnapshot)
+                ? "目标目录已存在且与源一致，执行时可登记为受管镜像。"
+                : "目标目录已存在且与源不一致，请先处理冲突。";
+        }
+
         if (File.Exists(target.TargetPath) || Directory.Exists(target.TargetPath))
         {
             return "目标已存在，请确认是否冲突。";

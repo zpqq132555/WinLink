@@ -474,6 +474,11 @@ public sealed class LinkExecutionPlan
     /// 需要在执行前统一确认的降级项。
     /// </summary>
     public List<LinkExecutionDowngradeItem> Downgrades { get; set; } = [];
+
+    /// <summary>
+    /// 需要在执行前统一确认的目录镜像采纳项。
+    /// </summary>
+    public List<LinkExecutionMirrorAdoptionItem> MirrorAdoptions { get; set; } = [];
 }
 
 /// <summary>
@@ -530,6 +535,11 @@ public sealed class PlannedLinkTarget
     /// 当前目标是否需要从推荐策略降级。
     /// </summary>
     public bool RequiresDowngrade { get; set; }
+
+    /// <summary>
+    /// 目录镜像目标在执行前的处置方式。
+    /// </summary>
+    public MirrorTargetDisposition MirrorDisposition { get; set; }
 }
 
 /// <summary>
@@ -561,6 +571,37 @@ public sealed class LinkExecutionDowngradeItem
     /// 可接受的替代策略。
     /// </summary>
     public LinkCreationStrategy FallbackStrategy { get; set; }
+}
+
+/// <summary>
+/// 表示目录镜像目标在计划阶段的处置结果。
+/// </summary>
+public enum MirrorTargetDisposition
+{
+    CreateNew = 0,
+    AdoptExisting = 1,
+    Conflict = 2,
+}
+
+/// <summary>
+/// 表示一个需要统一确认的目录镜像采纳项。
+/// </summary>
+public sealed class LinkExecutionMirrorAdoptionItem
+{
+    /// <summary>
+    /// 任务名称。
+    /// </summary>
+    public string TaskDisplayName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 目标名称。
+    /// </summary>
+    public string TargetDisplayName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 目标路径。
+    /// </summary>
+    public string TargetPath { get; set; } = string.Empty;
 }
 
 /// <summary>

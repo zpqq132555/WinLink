@@ -69,6 +69,16 @@ public sealed class PresetTemplatePreview
 }
 
 /// <summary>
+/// 表示预设目标在当前环境下的预览状态。
+/// </summary>
+public enum PresetTargetPreviewState
+{
+    Ready = 0,
+    Conflict = 1,
+    AdoptableMirror = 2,
+}
+
+/// <summary>
 /// 表示预设中某个目标在当前环境下的预览状态。
 /// </summary>
 public sealed class PresetTemplatePreviewTarget
@@ -86,7 +96,12 @@ public sealed class PresetTemplatePreviewTarget
     /// <summary>
     /// 该目标是否已与现有文件系统冲突。
     /// </summary>
-    public bool HasConflict { get; set; }
+    public PresetTargetPreviewState PreviewState { get; set; }
+
+    /// <summary>
+    /// 该目标是否已与现有文件系统冲突。
+    /// </summary>
+    public bool HasConflict => PreviewState == PresetTargetPreviewState.Conflict;
 
     /// <summary>
     /// 该目标的父目录当前是否缺失。

@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using WinLink.App.Dialogs;
 using WinLink.App.Models;
@@ -204,7 +205,23 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade);
+        var allowMirrorAdoption = true;
+        if (plan.MirrorAdoptions.Count > 0)
+        {
+            var confirmationWindow = new MirrorAdoptionConfirmationWindow(plan.MirrorAdoptions)
+            {
+                Owner = this,
+            };
+            allowMirrorAdoption = confirmationWindow.ShowDialog() == true;
+        }
+
+        if (!allowMirrorAdoption)
+        {
+            viewModel.ShowStatus("已取消本次预设应用。");
+            return;
+        }
+
+        var result = await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade, allowMirrorAdoption);
         MessageBox.Show(
             this,
             ExecutionResultMessageFormatter.Format(result.HistoryEntry),
@@ -261,7 +278,23 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = await viewModel.ExecutePendingTasksAsync(plan, allowDowngrade);
+        var allowMirrorAdoption = true;
+        if (plan.MirrorAdoptions.Count > 0)
+        {
+            var confirmationWindow = new MirrorAdoptionConfirmationWindow(plan.MirrorAdoptions)
+            {
+                Owner = this,
+            };
+            allowMirrorAdoption = confirmationWindow.ShowDialog() == true;
+        }
+
+        if (!allowMirrorAdoption)
+        {
+            viewModel.ShowStatus("已取消本次执行。");
+            return;
+        }
+
+        var result = await viewModel.ExecutePendingTasksAsync(plan, allowDowngrade, allowMirrorAdoption);
         MessageBox.Show(
             this,
             ExecutionResultMessageFormatter.Format(result.HistoryEntry),
@@ -330,6 +363,16 @@ public partial class MainWindow : Window
     private async void RemoveManagedTargetRecordButton_OnClick(object sender, RoutedEventArgs e)
     {
         await viewModel.RemoveManagedTargetRecordAsync(viewModel.SelectedManagedTarget);
+    }
+
+    private void ManagedTargetDetailsExpander_OnExpanded(object sender, RoutedEventArgs e)
+    {
+        SetManagedTargetRowDetailsVisibility(sender, Visibility.Visible);
+    }
+
+    private void ManagedTargetDetailsExpander_OnCollapsed(object sender, RoutedEventArgs e)
+    {
+        SetManagedTargetRowDetailsVisibility(sender, Visibility.Collapsed);
     }
 
     private async Task PromptMirrorSyncIfNeededAsync()
@@ -413,5 +456,37 @@ public partial class MainWindow : Window
         }
 
         return $"检测到源目录“{record.DisplayName}”发生变化。是否现在同步到所有目标目录？";
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject? source)
+        where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T typed)
+            {
+                return typed;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
+
+    private static void SetManagedTargetRowDetailsVisibility(object sender, Visibility visibility)
+    {
+        if (sender is not DependencyObject source)
+        {
+            return;
+        }
+
+        var row = FindVisualParent<DataGridRow>(source);
+        if (row is null)
+        {
+            return;
+        }
+
+        row.DetailsVisibility = visibility;
     }
 }

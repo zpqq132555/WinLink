@@ -48,6 +48,44 @@ public sealed class LinkExecutionServiceTests
     }
 
     [Fact]
+    public async Task PlanExecutionAsync_should_collect_adoptable_existing_directory_mirrors()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
+
+            var plan = await service.PlanExecutionAsync([task]);
+
+            Assert.Single(plan.MirrorAdoptions);
+            Assert.Empty(plan.Downgrades);
+            Assert.Equal(MirrorTargetDisposition.AdoptExisting, plan.Targets[0].MirrorDisposition);
+            Assert.Equal(targetPath, plan.MirrorAdoptions[0].TargetPath);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteAsync_should_best_effort_create_links_and_persist_registry_and_history()
     {
         var tempRoot = CreateTemporaryDirectory();
@@ -83,7 +121,7 @@ public sealed class LinkExecutionServiceTests
             var service = CreateExecutionService(tempRoot, backend);
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
             var registry = await storage.LoadRegistryAsync();
             var history = await storage.LoadHistoryAsync();
@@ -142,7 +180,7 @@ public sealed class LinkExecutionServiceTests
             var service = CreateExecutionService(tempRoot, backend);
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
 
             Assert.Equal(1, result.HistoryEntry.SuccessCount);
             Assert.Equal(0, result.HistoryEntry.SkippedCount);
@@ -189,7 +227,7 @@ public sealed class LinkExecutionServiceTests
             var service = CreateExecutionService(tempRoot, backend);
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
             var registry = await storage.LoadRegistryAsync();
 
@@ -241,7 +279,7 @@ public sealed class LinkExecutionServiceTests
             var service = CreateExecutionService(tempRoot, backend);
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
             var registry = await storage.LoadRegistryAsync();
 
@@ -285,7 +323,7 @@ public sealed class LinkExecutionServiceTests
             var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var registry = await storage.LoadRegistryAsync();
 
             Assert.Empty(plan.Downgrades);
@@ -299,6 +337,84 @@ public sealed class LinkExecutionServiceTests
             Assert.NotEmpty(record.Targets[0].LastSynchronizedSnapshot);
             Assert.NotNull(record.Targets[0].LastSynchronizedAt);
             Assert.Equal(LinkCreationStrategy.Auto, record.Targets[0].AppliedStrategy);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_should_adopt_existing_directory_mirror_and_persist_snapshots()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
+            var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
+
+            var plan = await service.PlanExecutionAsync([task]);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
+            var record = (await storage.LoadRegistryAsync()).Records.Single();
+
+            Assert.Equal(1, result.HistoryEntry.SuccessCount);
+            Assert.Equal(0, result.HistoryEntry.SkippedCount);
+            Assert.False(string.IsNullOrWhiteSpace(record.Targets[0].StatusReason));
+            Assert.NotEmpty(record.Targets[0].LastSynchronizedSnapshot);
+            Assert.Equal(MirrorTargetDisposition.AdoptExisting, plan.Targets[0].MirrorDisposition);
+            Assert.Equal(LinkCreationStrategy.Auto, record.Targets[0].AppliedStrategy);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_should_block_when_adoptable_directory_mirror_is_not_confirmed()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(tempRoot, "skills");
+            var targetPath = Path.Combine(tempRoot, "mirror", "skills");
+            Directory.CreateDirectory(sourcePath);
+            File.WriteAllText(Path.Combine(sourcePath, "config.json"), "{ }");
+            DirectoryMirrorService.MirrorDirectory(sourcePath, targetPath);
+
+            var task = new LinkTaskDraft
+            {
+                DisplayName = "skills 镜像",
+                SourcePath = sourcePath,
+                SourceKind = LinkSourceKind.Directory,
+                Mode = ManagedPathMode.DirectoryMirror,
+            };
+            var target = new LinkTargetDraft();
+            target.ApplyFullPath(targetPath);
+            task.Targets.Add(target);
+
+            var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
+            var plan = await service.PlanExecutionAsync([task]);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: false));
         }
         finally
         {
@@ -332,7 +448,7 @@ public sealed class LinkExecutionServiceTests
             var service = CreateExecutionService(tempRoot, new FakeLinkBackendService());
             var storage = new JsonRegistryStorageService(new AppDirectories(tempRoot));
             var plan = await service.PlanExecutionAsync([task]);
-            await service.ExecuteAsync(plan, allowDowngrade: true);
+            await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
 
             File.Delete(oldFilePath);
             File.WriteAllText(Path.Combine(sourcePath, "new.txt"), "new");

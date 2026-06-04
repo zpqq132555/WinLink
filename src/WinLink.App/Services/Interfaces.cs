@@ -119,7 +119,7 @@ public interface ILinkOperationService
     /// <summary>
     /// 执行批量创建。
     /// </summary>
-    Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade);
+    Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade, bool allowMirrorAdoption);
 
     /// <summary>
     /// 将目录镜像源同步到当前记录下的所有目标目录。

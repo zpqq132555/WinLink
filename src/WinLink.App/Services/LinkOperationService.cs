@@ -51,6 +51,17 @@ public sealed class LinkOperationService : ILinkOperationService
                         FallbackStrategy = plannedTarget.PlannedStrategy,
                     });
                 }
+
+                if (plannedTarget.Mode == ManagedPathMode.DirectoryMirror &&
+                    plannedTarget.MirrorDisposition == MirrorTargetDisposition.AdoptExisting)
+                {
+                    plan.MirrorAdoptions.Add(new LinkExecutionMirrorAdoptionItem
+                    {
+                        TaskDisplayName = task.DisplayName,
+                        TargetDisplayName = target.DisplayName,
+                        TargetPath = target.TargetPath,
+                    });
+                }
             }
         }
 
@@ -102,7 +113,8 @@ public sealed class LinkOperationService : ILinkOperationService
 
             foreach (var target in task.Targets)
             {
-                if (!string.IsNullOrWhiteSpace(target.ValidationMessage))
+                if (!string.IsNullOrWhiteSpace(target.ValidationMessage) &&
+                    !IsInformationalValidationMessage(task, target))
                 {
                     issues.Add($"任务“{task.DisplayName}”的目标“{target.DisplayName}”：{target.ValidationMessage}");
                 }
@@ -144,12 +156,26 @@ public sealed class LinkOperationService : ILinkOperationService
         return issues;
     }
 
+    private static bool IsInformationalValidationMessage(LinkTaskDraft task, LinkTargetDraft target)
+    {
+        return task.Mode == ManagedPathMode.DirectoryMirror &&
+               string.Equals(
+                   target.ValidationMessage,
+                   "目标目录已存在且与源一致，执行时可登记为受管镜像。",
+                   StringComparison.Ordinal);
+    }
+
     /// <inheritdoc />
-    public async Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade)
+    public async Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade, bool allowMirrorAdoption)
     {
         if (plan.Downgrades.Count > 0 && !allowDowngrade)
         {
             throw new InvalidOperationException("存在未确认的降级项，不能直接执行。");
+        }
+
+        if (plan.MirrorAdoptions.Count > 0 && !allowMirrorAdoption)
+        {
+            throw new InvalidOperationException("存在未确认的镜像采纳项，不能直接执行。");
         }
 
         var registry = await registryStorageService.LoadRegistryAsync();
@@ -164,6 +190,34 @@ public sealed class LinkOperationService : ILinkOperationService
 
         foreach (var plannedTarget in plan.Targets)
         {
+            if (plannedTarget.Mode == ManagedPathMode.DirectoryMirror &&
+                plannedTarget.MirrorDisposition == MirrorTargetDisposition.AdoptExisting)
+            {
+                historyEntry.SuccessCount++;
+
+                var managedRecordKey = string.IsNullOrWhiteSpace(plannedTarget.ReusedManagedSourceRecordId)
+                    ? plannedTarget.TaskId
+                    : plannedTarget.ReusedManagedSourceRecordId;
+
+                if (!managedRecordsByTask.TryGetValue(managedRecordKey, out var adoptedRecord))
+                {
+                    adoptedRecord = new ManagedLinkRecord
+                    {
+                        Id = managedRecordKey,
+                        DisplayName = plannedTarget.TaskDisplayName,
+                        SourcePath = plannedTarget.SourcePath,
+                        SourceKind = plannedTarget.SourceKind,
+                        Mode = plannedTarget.Mode,
+                        PreferredStrategy = plannedTarget.RecommendedStrategy,
+                    };
+                    managedRecordsByTask.Add(managedRecordKey, adoptedRecord);
+                }
+
+                ApplyExecutionMetadata(plannedTarget, adoptedRecord, sourceSnapshots, now);
+                adoptedRecord.Targets.Add(CreateManagedTargetRecord(plannedTarget, LinkCreationStrategy.Auto, sourceSnapshots, now));
+                adoptedRecord.UpdatedAt = now;
+                continue;
+            }
             if (File.Exists(plannedTarget.Target.TargetPath) || Directory.Exists(plannedTarget.Target.TargetPath))
             {
                 historyEntry.SkippedCount++;
@@ -383,7 +437,7 @@ public sealed class LinkOperationService : ILinkOperationService
             return $"当前环境无法为目标“{currentTarget.DisplayName}”选择可用策略，无法重建。";
         }
 
-        var result = await ExecuteAsync(plan, allowDowngrade: true);
+        var result = await ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
         if (result.HistoryEntry.SuccessCount == 0)
         {
             return result.HistoryEntry.FailureReasons.FirstOrDefault() ?? $"目标“{currentTarget.DisplayName}”重建失败。";
@@ -440,7 +494,34 @@ public sealed class LinkOperationService : ILinkOperationService
             RecommendedStrategy = recommendedStrategy,
             PlannedStrategy = plannedStrategy,
             RequiresDowngrade = task.Mode == ManagedPathMode.Link && requiresDowngrade,
+            MirrorDisposition = task.Mode == ManagedPathMode.DirectoryMirror
+                ? DetermineMirrorDisposition(task.SourcePath, target.TargetPath)
+                : MirrorTargetDisposition.CreateNew,
         };
+    }
+
+    private static MirrorTargetDisposition DetermineMirrorDisposition(string sourcePath, string targetPath)
+    {
+        if (File.Exists(targetPath))
+        {
+            return MirrorTargetDisposition.Conflict;
+        }
+
+        if (!Directory.Exists(targetPath))
+        {
+            return MirrorTargetDisposition.CreateNew;
+        }
+
+        if (!Directory.Exists(sourcePath))
+        {
+            return MirrorTargetDisposition.Conflict;
+        }
+
+        var sourceSnapshot = DirectoryMirrorService.CaptureSnapshot(sourcePath);
+        var targetSnapshot = DirectoryMirrorService.CaptureSnapshot(targetPath);
+        return DirectoryMirrorService.SnapshotsEqual(sourceSnapshot, targetSnapshot)
+            ? MirrorTargetDisposition.AdoptExisting
+            : MirrorTargetDisposition.Conflict;
     }
 
     private async Task<LinkCreationStrategy> ExecutePlannedTargetAsync(PlannedLinkTarget plannedTarget)
@@ -494,6 +575,8 @@ public sealed class LinkOperationService : ILinkOperationService
             LastCheckedAt = now,
         };
 
+        targetRecord.StatusReason = ResolveTargetStatusReason(plannedTarget);
+
         if (plannedTarget.Mode == ManagedPathMode.DirectoryMirror &&
             sourceSnapshots.TryGetValue(plannedTarget.SourcePath, out var sourceSnapshot))
         {
@@ -502,6 +585,18 @@ public sealed class LinkOperationService : ILinkOperationService
         }
 
         return targetRecord;
+    }
+
+    private static string ResolveTargetStatusReason(PlannedLinkTarget plannedTarget)
+    {
+        if (plannedTarget.Mode != ManagedPathMode.DirectoryMirror)
+        {
+            return "最近一次执行创建成功。";
+        }
+
+        return plannedTarget.MirrorDisposition == MirrorTargetDisposition.AdoptExisting
+            ? "已采纳现有镜像并建立受管记录。"
+            : "已完成首次镜像拷贝。";
     }
 
     private static bool HasMirrorTargetLocalChanges(ManagedLinkTargetRecord target)

@@ -577,7 +577,7 @@ public sealed class ManagedLinkRegistryTests
 
             var issues = await viewModel.ValidateSelectedPresetAsync();
             var plan = await viewModel.BuildSelectedPresetExecutionPlanAsync();
-            var result = await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade: true);
+            var result = await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var registry = await storage.LoadRegistryAsync();
             var history = await storage.LoadHistoryAsync();
 
@@ -662,7 +662,7 @@ public sealed class ManagedLinkRegistryTests
             viewModel.SelectedPreset = preset;
 
             var plan = await viewModel.BuildSelectedPresetExecutionPlanAsync();
-            await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade: true);
+            await viewModel.ApplySelectedPresetAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var registry = await storage.LoadRegistryAsync();
 
             var record = Assert.Single(registry.Records);
@@ -739,7 +739,7 @@ public sealed class ManagedLinkRegistryTests
             task.Targets.Add(newTarget);
 
             var plan = await service.PlanExecutionAsync([task]);
-            var result = await service.ExecuteAsync(plan, allowDowngrade: true);
+            var result = await service.ExecuteAsync(plan, allowDowngrade: true, allowMirrorAdoption: true);
             var registry = await storage.LoadRegistryAsync();
 
             var record = Assert.Single(registry.Records);
@@ -851,6 +851,134 @@ public sealed class ManagedLinkRegistryTests
             Assert.Null(reason);
             Assert.Equal("record-b", viewModel.SelectedManagedLink?.Id);
             Assert.Equal("target-b2", viewModel.SelectedManagedTarget?.Id);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RemoveManagedTargetRecordAsync_should_keep_current_record_selected_when_other_targets_remain()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var recordA = CreateRecord(Path.Combine(tempRoot, "source-a.txt"), LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            recordA.Id = "record-a";
+            recordA.Targets[0].Id = "target-a1";
+
+            var recordB = new ManagedLinkRecord
+            {
+                Id = "record-b",
+                DisplayName = "skills 同步",
+                SourcePath = Path.Combine(tempRoot, "source-b"),
+                SourceKind = LinkSourceKind.Directory,
+                PreferredStrategy = LinkCreationStrategy.Junction,
+                Targets =
+                [
+                    new ManagedLinkTargetRecord
+                    {
+                        Id = "target-b1",
+                        DisplayName = "Claude skills",
+                        TargetPath = Path.Combine(tempRoot, "targets", "claude-skills"),
+                        AppliedStrategy = LinkCreationStrategy.Junction,
+                    },
+                    new ManagedLinkTargetRecord
+                    {
+                        Id = "target-b2",
+                        DisplayName = "Workspace skills",
+                        TargetPath = Path.Combine(tempRoot, "targets", "workspace-skills"),
+                        AppliedStrategy = LinkCreationStrategy.Junction,
+                    },
+                ],
+            };
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [recordA, recordB],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                CreateExecutionService(tempRoot, new FakePresetApplyBackendService()),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            viewModel.SelectedManagedLink = viewModel.ManagedLinks.Single(record => record.Id == "record-b");
+            viewModel.SelectedManagedTarget = viewModel.SelectedManagedLink.Targets.Single(target => target.Id == "target-b1");
+
+            await viewModel.RemoveManagedTargetRecordAsync(viewModel.SelectedManagedTarget);
+
+            Assert.Equal("record-b", viewModel.SelectedManagedLink?.Id);
+            Assert.Equal("target-b2", viewModel.SelectedManagedTarget?.Id);
+            Assert.Single(viewModel.SelectedManagedLink?.Targets ?? []);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RemoveManagedTargetRecordAsync_should_fallback_only_when_current_record_is_removed_entirely()
+    {
+        var tempRoot = CreateTemporaryDirectory();
+        try
+        {
+            var directories = new AppDirectories(tempRoot);
+            var storage = new JsonRegistryStorageService(directories);
+            var recordA = CreateRecord(Path.Combine(tempRoot, "source-a.txt"), LinkSourceKind.File, Path.Combine(tempRoot, "links", "a.txt"), LinkCreationStrategy.HardLink);
+            recordA.Id = "record-a";
+            recordA.Targets[0].Id = "target-a1";
+
+            var recordB = new ManagedLinkRecord
+            {
+                Id = "record-b",
+                DisplayName = "skills 同步",
+                SourcePath = Path.Combine(tempRoot, "source-b"),
+                SourceKind = LinkSourceKind.Directory,
+                PreferredStrategy = LinkCreationStrategy.Junction,
+                Targets =
+                [
+                    new ManagedLinkTargetRecord
+                    {
+                        Id = "target-b1",
+                        DisplayName = "Claude skills",
+                        TargetPath = Path.Combine(tempRoot, "targets", "claude-skills"),
+                        AppliedStrategy = LinkCreationStrategy.Junction,
+                    },
+                ],
+            };
+
+            await storage.SaveRegistryAsync(new ManagedLinkRegistryDocument
+            {
+                Records = [recordA, recordB],
+            });
+
+            var pathService = new PathEnvironmentService();
+            var viewModel = new ShellViewModel(
+                directories,
+                pathService,
+                new LinkTaskWorkbenchService(pathService),
+                CreateExecutionService(tempRoot, new FakePresetApplyBackendService()),
+                new NoopLinkStatusService(),
+                new PresetTemplateService(pathService, tempRoot),
+                storage);
+
+            viewModel.SelectedManagedLink = viewModel.ManagedLinks.Single(record => record.Id == "record-b");
+            viewModel.SelectedManagedTarget = viewModel.SelectedManagedLink.Targets.Single(target => target.Id == "target-b1");
+
+            await viewModel.RemoveManagedTargetRecordAsync(viewModel.SelectedManagedTarget);
+
+            Assert.Equal("record-a", viewModel.SelectedManagedLink?.Id);
+            Assert.Equal("target-a1", viewModel.SelectedManagedTarget?.Id);
         }
         finally
         {
@@ -1142,7 +1270,7 @@ public sealed class ManagedLinkRegistryTests
             return Task.FromResult<IReadOnlyList<string>>([]);
         }
 
-        public Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade)
+        public Task<LinkExecutionBatchResult> ExecuteAsync(LinkExecutionPlan plan, bool allowDowngrade, bool allowMirrorAdoption)
         {
             return Task.FromResult(new LinkExecutionBatchResult());
         }
